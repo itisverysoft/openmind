@@ -64,7 +64,7 @@ where practical (`OpenMindTests/`) and match the existing code style.
 
 ## About VerySoft
 
-OpenMind is built by [VerySoft](https://openmind.verysoft.site).
+OpenMind is built by [VerySoft](https://verysoft.site).
 
 - 🌐 Project site: [openmind.verysoft.site](https://openmind.verysoft.site)
 - ✉️ Email: [itisverysoft@gmail.com](mailto:itisverysoft@gmail.com)
