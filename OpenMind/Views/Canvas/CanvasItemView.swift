@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct CanvasItemView: View {
     @Bindable var item: CanvasItem
@@ -16,6 +19,13 @@ struct CanvasItemView: View {
     var tableAnchor: Binding<TableCellRef?> = .constant(nil)
     /// Shift held (plumbed from CanvasView): cell taps extend the range.
     var tableShiftHeld: Bool = false
+    /// Shift held (plumbed from CanvasView): while true, corner resize
+    /// preserves the item's current aspect ratio.
+    var shiftHeld: Bool = false
+    /// Live multi-select resize preview (world frame). When set, the view
+    /// renders this frame instead of the stored model + single-resize delta,
+    /// so grouped / marquee selections scale together with one handle.
+    var liveFrame: CGRect? = nil
     /// Live world-space offset applied to every selected item while a
     /// group drag is in flight. Owned by CanvasView so all selected items
     /// move together; this view itself holds no move state.
@@ -34,6 +44,10 @@ struct CanvasItemView: View {
 
     // Live, not-yet-saved resize state, in WORLD points.
     @State private var resizeDelta: CGSize = .zero
+    /// Aspect (w/h) used for the in-flight resize when Shift locks the
+    /// ratio. Nil = free resize. Tracked so the live frame doesn't clamp
+    /// w/h independently (which would break the ratio at minimum sizes).
+    @State private var resizeLockedAspect: CGFloat? = nil
 
     private let minSize: CGFloat = 60   // world points
     private let drawingMinSize: CGFloat = 8  // strokes size to their ink, not a box
@@ -57,16 +71,28 @@ struct CanvasItemView: View {
     private var isNote: Bool { item.kind == .note }
 
     /// Screen size: constant for notes, world-scaled for everything else.
+    /// A multi-resize `liveFrame` overrides the stored size (notes still
+    /// render fixed, positioned by the live center — see `displayOrigin`).
     private var displaySize: CGSize {
         if isNote { return CGSize(width: noteDiameter, height: noteDiameter) }
+        if let live = liveFrame {
+            return CGSize(width: max(1, live.width) * scale, height: max(1, live.height) * scale)
+        }
         return CGSize(width: worldWidth * scale, height: worldHeight * scale)
     }
 
     /// Screen origin: top-left of the displayed frame. Notes center their
     /// fixed circle on the item's world center; others use the world
-    /// top-left like before.
+    /// top-left like before. A multi-resize `liveFrame` wins over both the
+    /// model and the move/group offsets so the whole selection previews
+    /// together.
     private var displayOrigin: CGPoint {
         if isNote {
+            if let live = liveFrame {
+                let cx = live.midX * scale + viewport.offset.width
+                let cy = live.midY * scale + viewport.offset.height
+                return CGPoint(x: cx - noteDiameter / 2, y: cy - noteDiameter / 2)
+            }
             let dx = isSelected ? groupOffset.width : 0
             let dy = isSelected ? groupOffset.height : 0
             let cx = (CGFloat(item.x) + CGFloat(item.width) / 2 + dx) * scale + viewport.offset.width
@@ -102,17 +128,34 @@ struct CanvasItemView: View {
         (item.kind == .image || item.kind == .pdf || item.kind == .youtube) && imageAspect != nil
     }
 
+    /// Live Shift state: the plumbed binding covers the common case
+    /// (Shift held before the drag starts). On macOS also poll the real
+    /// modifier flags so pressing/releasing Shift mid-drag works even
+    /// though the gesture closure captured the old value.
+    private var shiftActive: Bool {
+        if shiftHeld { return true }
+#if os(macOS)
+        return NSEvent.modifierFlags.contains(.shift)
+#else
+        return false
+#endif
+    }
+
+    private var isResizeAspectLocked: Bool {
+        isAspectLocked || resizeLockedAspect != nil
+    }
+
     private var worldWidth: CGFloat {
         // Aspect-locked tiles must never clamp w/h independently — that is
         // what stretched thin panoramas. Mins are enforced in the gesture
         // while preserving aspect; here just guard against zero/negative.
-        if isAspectLocked {
+        if isResizeAspectLocked {
             return max(1, CGFloat(item.width) + resizeDelta.width)
         }
         return max(minSide, CGFloat(item.width) + resizeDelta.width)
     }
     private var worldHeight: CGFloat {
-        if isAspectLocked {
+        if isResizeAspectLocked {
             return max(1, CGFloat(item.height) + resizeDelta.height)
         }
         return max(minSide, CGFloat(item.height) + resizeDelta.height)
@@ -121,7 +164,14 @@ struct CanvasItemView: View {
     /// Top-left corner on screen: screen = world * scale + offset.
     /// While a group drag is active every selected item shifts by the shared
     /// `groupOffset` so the whole marquee selection moves together.
+    /// A multi-resize `liveFrame` overrides both for the preview.
     private var screenOrigin: CGPoint {
+        if let live = liveFrame {
+            return CGPoint(
+                x: live.minX * scale + viewport.offset.width,
+                y: live.minY * scale + viewport.offset.height
+            )
+        }
         let dx = isSelected ? groupOffset.width : 0
         let dy = isSelected ? groupOffset.height : 0
         return CGPoint(
@@ -247,16 +297,34 @@ struct CanvasItemView: View {
                 let dx = value.translation.width / scale
                 let dy = value.translation.height / scale
                 if let aspect = imageAspect {
+                    resizeLockedAspect = aspect
                     resizeDelta = lockedImageDelta(dx: dx, dy: dy, aspect: aspect)
+                } else if shiftActive {
+                    let h = CGFloat(item.height)
+                    if h > 0 {
+                        let aspect = CGFloat(item.width) / h
+                        if aspect > 0 {
+                            resizeLockedAspect = aspect
+                            resizeDelta = lockedImageDelta(dx: dx, dy: dy, aspect: aspect)
+                        } else {
+                            resizeLockedAspect = nil
+                            resizeDelta = CGSize(width: dx, height: dy)
+                        }
+                    } else {
+                        resizeLockedAspect = nil
+                        resizeDelta = CGSize(width: dx, height: dy)
+                    }
                 } else {
+                    resizeLockedAspect = nil
                     resizeDelta = CGSize(width: dx, height: dy)
                 }
             }
             .onEnded { _ in
-                guard !item.isLocked else { resizeDelta = .zero; return }
+                guard !item.isLocked else { resizeDelta = .zero; resizeLockedAspect = nil; return }
                 item.width = Double(worldWidth)     // computed from the live delta: assign before reset
                 item.height = Double(worldHeight)
                 resizeDelta = .zero
+                resizeLockedAspect = nil
                 onCommit()
             }
     }
@@ -264,49 +332,12 @@ struct CanvasItemView: View {
     /// Corner resize that preserves `aspect` (w/h). Follows the dominant
     /// drag axis so both growing and shrinking feel natural, then enforces
     /// minimums without breaking the ratio: longer edge >= `minSize`,
-    /// shorter edge >= `imageShortMin`.
+    /// shorter edge >= `imageShortMin`. Used for always-locked media
+    /// (image/PDF/YouTube) and for Shift-locked resize of shapes, text,
+    /// tables and other free-form items.
     private func lockedImageDelta(dx: CGFloat, dy: CGFloat, aspect: CGFloat) -> CGSize {
-        let origW = CGFloat(item.width)
-        let origH = CGFloat(item.height)
-        guard origW > 0, origH > 0, aspect > 0 else {
-            return CGSize(width: dx, height: dy)
-        }
-        // Dominant axis drives; the other follows the aspect.
-        let useWidth = abs(dx) >= abs(dy * aspect)
-        var newW: CGFloat
-        var newH: CGFloat
-        if useWidth {
-            newW = origW + dx
-            newH = newW / aspect
-        } else {
-            newH = origH + dy
-            newW = newH * aspect
-        }
-        // Guard against zero/negative drags: snap to the minimum tile
-        // with the correct aspect instead of disappearing.
-        if newW < 1 || newH < 1 {
-            if aspect >= 1 {
-                newW = minSize
-                newH = newW / aspect
-            } else {
-                newH = minSize
-                newW = newH * aspect
-            }
-            return CGSize(width: newW - origW, height: newH - origH)
-        }
-        // Minimums, preserving aspect (longer >= minSize, shorter >= shortMin).
-        let longest = max(newW, newH)
-        if longest < minSize {
-            let s = minSize / longest
-            newW *= s
-            newH *= s
-        }
-        let shortest = min(newW, newH)
-        if shortest < imageShortMin {
-            let s = imageShortMin / shortest
-            newW *= s
-            newH *= s
-        }
-        return CGSize(width: newW - origW, height: newH - origH)
+        aspectLockedDelta(origW: CGFloat(item.width), origH: CGFloat(item.height),
+                          dx: dx, dy: dy, aspect: aspect,
+                          minSize: minSize, shortMin: imageShortMin)
     }
 }

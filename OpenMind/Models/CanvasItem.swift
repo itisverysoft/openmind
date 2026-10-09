@@ -95,6 +95,11 @@ final class CanvasItem {
     /// recolors, restacks, and erasing.
     var isLocked: Bool = false
 
+    /// Persistent group identity. Items sharing the same `groupID` behave
+    /// as one unit: selecting any member selects the whole group, and
+    /// moves/resizes apply together. Nil = ungrouped.
+    var groupID: UUID? = nil
+
     var board: Board?
 
     init(kind: ItemKind,

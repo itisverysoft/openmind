@@ -18,6 +18,10 @@ struct FloatingToolbar: View {
     var onColor: (String) -> Void
     var onDelete: () -> Void
     var onDuplicate: () -> Void = {}
+    var canGroup: Bool = false
+    var canUngroup: Bool = false
+    var onGroup: () -> Void = {}
+    var onUngroup: () -> Void = {}
     var onTool: (CanvasTool) -> Void = { _ in }
     var onPenStyle: (DrawingStyle) -> Void = { _ in }
     var onPenColor: (String) -> Void = { _ in }
@@ -79,11 +83,36 @@ struct FloatingToolbar: View {
             // images, drawings) has no single meaningful color, and applying
             // one would silently do nothing on text/image items.
             if isMultiSelection && tool == .select {
-                Text("\(selectedItems.count) selected")
-                    .font(.caption)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(.regularMaterial, in: Capsule())
+                HStack(spacing: 12) {
+                    Text("\(selectedItems.count) selected")
+                        .font(.caption)
+                    if canGroup || canUngroup {
+                        Divider().frame(height: 16)
+                        if canGroup {
+                            Button(action: onGroup) {
+                                Label("Group", systemImage: "square.on.square.squareshape.controlhandles")
+                            }
+                            .keyboardShortcut("g", modifiers: .command)
+                            .disabled(isEditing)
+                            .help("Group selection (⌘G)")
+                        }
+                        if canUngroup {
+                            Button(action: onUngroup) {
+                                Label("Ungroup", systemImage: "square.on.square")
+                            }
+                            .keyboardShortcut("g", modifiers: [.command, .shift])
+                            .disabled(isEditing)
+                            .help("Ungroup selection (⇧⌘G)")
+                        }
+                    }
+                    Text("drag corner to resize (Shift: free stretch)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .labelStyle(.iconOnly)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
             }
             mainRow
         }

@@ -162,6 +162,7 @@ func duplicateBoard(_ source: Board, in context: ModelContext) -> Board {
         itemCopy.videoDuration = original.videoDuration
         itemCopy.pageIndex = original.pageIndex
         itemCopy.tableData = original.tableData
+        itemCopy.groupID = original.groupID
         // Duplicates start unlocked (see CanvasView.duplicateSelected).
         itemCopy.isLocked = false
         context.insert(itemCopy)

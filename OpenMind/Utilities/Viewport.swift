@@ -98,6 +98,56 @@ func snappedLineEnd(from anchor: CGPoint, to current: CGPoint) -> CGPoint {
                    y: anchor.y + len * sin(snapped))
 }
 
+/// Corner-resize delta that preserves `aspect` (w/h). Follows the dominant
+/// drag axis so both growing and shrinking feel natural, then enforces
+/// minimums without breaking the ratio: longer edge >= `minSize`,
+/// shorter edge >= `shortMin`. Pure geometry shared by always-locked media
+/// (image/PDF/YouTube) and Shift-locked resize of shapes and other items.
+func aspectLockedDelta(origW: CGFloat, origH: CGFloat,
+                       dx: CGFloat, dy: CGFloat, aspect: CGFloat,
+                       minSize: CGFloat = 60, shortMin: CGFloat = 8) -> CGSize {
+    guard origW > 0, origH > 0, aspect > 0 else {
+        return CGSize(width: dx, height: dy)
+    }
+    // Dominant axis drives; the other follows the aspect.
+    let useWidth = abs(dx) >= abs(dy * aspect)
+    var newW: CGFloat
+    var newH: CGFloat
+    if useWidth {
+        newW = origW + dx
+        newH = newW / aspect
+    } else {
+        newH = origH + dy
+        newW = newH * aspect
+    }
+    // Guard against zero/negative drags: snap to the minimum tile
+    // with the correct aspect instead of disappearing.
+    if newW < 1 || newH < 1 {
+        if aspect >= 1 {
+            newW = minSize
+            newH = newW / aspect
+        } else {
+            newH = minSize
+            newW = newH * aspect
+        }
+        return CGSize(width: newW - origW, height: newH - origH)
+    }
+    // Minimums, preserving aspect (longer >= minSize, shorter >= shortMin).
+    let longest = max(newW, newH)
+    if longest < minSize {
+        let s = minSize / longest
+        newW *= s
+        newH *= s
+    }
+    let shortest = min(newW, newH)
+    if shortest < shortMin {
+        let s = shortMin / shortest
+        newW *= s
+        newH *= s
+    }
+    return CGSize(width: newW - origW, height: newH - origH)
+}
+
 /// Indices of `frames` (world space) intersecting `marqueeWorld`.
 /// Any overlap selects; full containment is not required.
 func framesIntersectingMarquee(frames: [CGRect], marqueeWorld: CGRect) -> [Int] {

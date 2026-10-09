@@ -84,6 +84,7 @@ struct VSOMItem: Codable {
     var tableData: Data
     var zIndex: Double
     var isLocked: Bool
+    var groupID: UUID? = nil
 }
 
 /// Serializes `board` (visible items only) to `.vsom` file bytes.
@@ -129,7 +130,8 @@ func exportBoard(_ board: Board) throws -> Data {
                 videoDuration: item.videoDuration,
                 tableData: item.tableData,
                 zIndex: item.zIndex,
-                isLocked: item.isLocked
+                isLocked: item.isLocked,
+                groupID: item.groupID
             )
         }
     )
@@ -197,6 +199,7 @@ func importVSOMDocument(_ doc: VSOMDocument, fileName: String, context: ModelCon
         item.videoDuration = src.videoDuration
         item.tableData = src.tableData
         item.isLocked = src.isLocked
+        item.groupID = src.groupID
         item.ensureTable()
         context.insert(item)
         item.board = board

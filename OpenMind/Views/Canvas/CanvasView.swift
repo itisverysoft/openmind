@@ -81,6 +81,20 @@ struct CanvasView: View {
     @State private var groupDragOffset: CGSize = .zero
     @State private var groupDragIDs: Set<UUID> = []
 
+    // Multi-select resize: snapshot of the selection's frames + original
+    // bounds at drag start, plus the live world-space delta. Preview frames
+    // are derived (see `multiResizeLiveFrames`) and passed as `liveFrame`
+    // to each item; the model commits once on drag end. Ratios are preserved
+    // by default (uniform scale of the bounds); holding Shift stretches the
+    // bounds freely.
+    @State private var multiResizeIDs: Set<UUID> = []
+    @State private var multiResizeBase: [UUID: CGRect] = [:]
+    @State private var multiResizeBoundsOrig: CGRect? = nil
+    @State private var multiResizeDelta: CGSize = .zero
+    @State private var multiResizeLocked: Bool = false
+    /// Hover highlight for the multi-resize handle (appearance only).
+    @State private var multiHandleHover = false
+
     // Drawing tools
     @State private var tool: CanvasTool = .select
     @State private var penStyle: DrawingStyle = .pen
@@ -183,31 +197,10 @@ struct CanvasView: View {
     }
 
     private func itemsLayer(vp: Viewport) -> some View {
-        Group {
+        let live = multiResizeLiveFrames()
+        return Group {
             ForEach(sortedItems) { item in
-                CanvasItemView(
-                    item: item,
-                    viewport: vp,
-                    isSelected: selectedIDs.contains(item.id),
-                    isEditing: item.id == editingID,
-                    showResize: selectedIDs.count == 1,
-                    richController: richController,
-                    tableSelection: $tableSelectedCells,
-                    tableAnchor: $tableAnchorCell,
-                    tableShiftHeld: isShiftHeld,
-                    groupOffset: groupDragOffset,
-                    onSelect: { select(item) },
-                    onBeginEditing: {
-                        beginEditing(item)
-                    },
-                    onCommit: touch,
-                    onUnlock: { unlockItem(item) },
-                    onDragChanged: { updateGroupDrag(item, translation: $0) },
-                    onDragEnded: { endGroupDrag(translation: $0) }
-                )
-                .contextMenu {
-                    arrangeMenu(for: item)
-                }
+                itemRow(for: item, vp: vp, liveFrame: live?[item.id] ?? nil)
             }
         }
         // In draw/erase/hand mode touches belong to the gestures below.
@@ -216,6 +209,34 @@ struct CanvasView: View {
         // Note-placement mode keeps items hittable so existing pins stay
         // tappable/draggable; empty-canvas taps place new pins.
         .allowsHitTesting((tool == .select || tool == .note) && !isTemporaryPan)
+    }
+
+    /// One canvas item + its context menu. Split from `itemsLayer` so the
+    /// type-checker sees small expressions instead of one giant ForEach.
+    private func itemRow(for item: CanvasItem, vp: Viewport, liveFrame: CGRect?) -> some View {
+        CanvasItemView(
+            item: item,
+            viewport: vp,
+            isSelected: selectedIDs.contains(item.id),
+            isEditing: item.id == editingID,
+            showResize: selectedIDs.count == 1,
+            richController: richController,
+            tableSelection: $tableSelectedCells,
+            tableAnchor: $tableAnchorCell,
+            tableShiftHeld: isShiftHeld,
+            shiftHeld: isShiftHeld,
+            liveFrame: liveFrame,
+            groupOffset: groupDragOffset,
+            onSelect: { select(item) },
+            onBeginEditing: { beginEditing(item) },
+            onCommit: touch,
+            onUnlock: { unlockItem(item) },
+            onDragChanged: { updateGroupDrag(item, translation: $0) },
+            onDragEnded: { endGroupDrag(translation: $0) }
+        )
+        .contextMenu {
+            arrangeMenu(for: item)
+        }
     }
 
     @ViewBuilder
@@ -228,6 +249,63 @@ struct CanvasView: View {
                 .offset(x: rect.minX, y: rect.minY)
                 .allowsHitTesting(false)
         }
+    }
+
+    /// Bounding box for 2+ selected items with a corner handle that scales
+    /// the whole selection together. Ratios are preserved by default (Shift
+    /// stretches freely). Select-mode only so draw/erase/hand and the
+    /// temporary pan hand keep the pointer.
+    @ViewBuilder
+    private func multiSelectOverlay(vp: Viewport) -> some View {
+        if canMultiResize, tool == .select, !isTemporaryPan,
+           marqueeStart == nil, let world = multiResizeDisplayBounds() {
+            let origin = vp.screenPoint(for: world.origin)
+            let size = CGSize(width: world.width * vp.scale, height: world.height * vp.scale)
+            let rect = CGRect(x: origin.x, y: origin.y, width: size.width, height: size.height)
+            Rectangle()
+                .stroke(Color.accentColor, lineWidth: 1.5)
+                .frame(width: max(1, rect.width), height: max(1, rect.height))
+                .offset(x: rect.minX, y: rect.minY)
+                .allowsHitTesting(false)
+            // Generous 44pt hit box (visible disc stays 22pt) so grabs near
+            // the corner resize instead of falling through to the item-move
+            // drag below. High-priority so the resize wins over ancestors
+            // (marquee); hover grows the disc as a live affordance.
+            Circle()
+                .fill(Color.white)
+                .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
+                .frame(width: 22, height: 22)
+                .scaleEffect(multiHandleHover ? 1.25 : 1)
+                .shadow(color: .black.opacity(multiHandleHover ? 0.3 : 0.15),
+                        radius: multiHandleHover ? 4 : 2, y: 1)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .offset(x: rect.maxX - 22, y: rect.maxY - 22)
+                .highPriorityGesture(multiResizeGesture(vp: vp))
+                .onHover { multiHandleHover = $0 }
+                .help("Drag to resize selection (ratios kept; Shift stretches freely)")
+        }
+    }
+
+    private func multiResizeGesture(vp: Viewport) -> some Gesture {
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { value in
+                if multiResizeIDs.isEmpty {
+                    let items = selectedItems.filter { !$0.isLocked }
+                    guard items.count >= 2 else { return }
+                    let base = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.frameRect) })
+                    guard let bounds = selectionUnion(frames: Array(base.values)),
+                          bounds.width > 0, bounds.height > 0 else { return }
+                    multiResizeIDs = Set(base.keys)
+                    multiResizeBase = base
+                    multiResizeBoundsOrig = bounds
+                }
+                updateMultiResize(translation: value.translation)
+            }
+            .onEnded { value in
+                guard !multiResizeIDs.isEmpty else { cancelMultiResize(); return }
+                endMultiResize(translation: value.translation)
+            }
     }
 
     // MARK: Body decomposition
@@ -271,6 +349,9 @@ struct CanvasView: View {
 
             // Marquee rubber-band, drawn above the items.
             marqueeOverlay
+
+            // Multi-select bounding box + resize handle (2+ selected).
+            multiSelectOverlay(vp: vp)
 
             // Freehand drawing + erasing layer. Only present while a draw
             // tool is active so selection, dragging and panning are
@@ -555,6 +636,10 @@ struct CanvasView: View {
             onColor: { (hex: String) in setColor(hex) },
             onDelete: deleteSelected,
             onDuplicate: duplicateSelected,
+            canGroup: canGroup,
+            canUngroup: canUngroup,
+            onGroup: groupSelected,
+            onUngroup: ungroupSelected,
             onTool: { (newTool: CanvasTool) in tool = newTool; handleToolChange() },
             onPenStyle: { (style: DrawingStyle) in
                 penStyle = style
@@ -1184,6 +1269,7 @@ struct CanvasView: View {
         lineHoverScreen = nil
         groupDragIDs = []
         groupDragOffset = .zero
+        cancelMultiResize()
         #if os(macOS)
         updateCursor()
         #endif
@@ -1214,6 +1300,14 @@ struct CanvasView: View {
             guard press.modifiers.contains(.command),
                   press.modifiers.contains(.shift) else { return .ignored }
             return toggleLockSelectionKeyPress()
+        }
+        .onKeyPress(keys: ["g", "G"]) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            if press.modifiers.contains(.shift) {
+                return ungroupKeyPress()
+            } else {
+                return groupKeyPress()
+            }
         }
         .onKeyPress(.escape) {
             // First Esc drops a pending line anchor, second disarms the tool.
@@ -1671,19 +1765,38 @@ struct CanvasView: View {
     /// Shift-clicks on cells of an already-selected table belong to the
     /// table's range selection (see TableItemView) and must not toggle the
     /// item itself — the cell tap bubbles here too.
+    /// Grouped items always act as one: clicking (or Shift-toggling) any
+    /// member selects/toggles the whole group.
     private func select(_ item: CanvasItem) {
         if isShiftHeld, item.kind == .table, selectedIDs.contains(item.id) { return }
+        let members = groupMembers(of: item)
         if isShiftHeld {
             editingID = nil
-            if selectedIDs.contains(item.id) {
-                selectedIDs.remove(item.id)
+            if members.isSubset(of: selectedIDs) {
+                selectedIDs.subtract(members)
             } else {
-                selectedIDs.insert(item.id)
+                selectedIDs.formUnion(members)
             }
         } else {
             if editingID != item.id { editingID = nil }
-            selectedIDs = [item.id]
+            selectedIDs = expandIDsForGroups(members)
         }
+    }
+
+    /// All IDs sharing `item`'s group on this page (just itself when
+    /// ungrouped). Trashed items never join.
+    private func groupMembers(of item: CanvasItem) -> Set<UUID> {
+        guard let gid = item.groupID else { return [item.id] }
+        let ids = pageItems.filter { $0.groupID == gid }.map(\.id)
+        return ids.isEmpty ? [item.id] : Set(ids)
+    }
+
+    /// Expands any grouped IDs to their whole groups (same-page, visible).
+    private func expandIDsForGroups(_ ids: Set<UUID>) -> Set<UUID> {
+        var groups: [UUID: UUID?] = [:]
+        groups.reserveCapacity(pageItems.count)
+        for it in pageItems { groups[it.id] = it.groupID }
+        return expandedForGroups(selected: ids, groups: groups)
     }
 
     private func beginEditing(_ item: CanvasItem) {
@@ -1704,9 +1817,9 @@ struct CanvasView: View {
         let world = vp.worldRect(for: marqueeScreenRect(from: start, to: current))
         let frames = sortedItems.map(\.frameRect)
         let hits = framesIntersectingMarquee(frames: frames, marqueeWorld: world)
-        let hitIDs = Set(hits.map { sortedItems[$0].id })
+        let hitIDs = expandIDsForGroups(Set(hits.map { sortedItems[$0].id }))
         if marqueeAdditive {
-            selectedIDs = marqueeInitial.union(hitIDs)
+            selectedIDs = expandIDsForGroups(marqueeInitial.union(hitIDs))
         } else {
             selectedIDs = hitIDs
         }
@@ -1751,6 +1864,190 @@ struct CanvasView: View {
             }
         }
         if moved { touch() }
+    }
+
+    // MARK: Grouping
+
+    /// Grouping needs 2+ selected items. Locks don't block grouping itself
+    /// (only moves/resizes); trash is already filtered from the selection.
+    private var canGroup: Bool { canGroupSelection(count: selectedItems.count) }
+
+    private var canUngroup: Bool {
+        canUngroupSelection(selectedGroupIDs: selectedItems.map(\.groupID))
+    }
+
+    /// Merges the whole selection into one new group (existing groups merge).
+    /// One undo step; the selection stays so the group can be moved/resized.
+    private func groupSelected() {
+        guard canGroup else { return }
+        let gid = UUID()
+        for item in selectedItems { item.groupID = gid }
+        touch()
+    }
+
+    /// Dissolves every group touched by the selection. Clears the group ID
+    /// from all page members (not just the selected ones) so no orphaned
+    /// single-item groups survive.
+    private func ungroupSelected() {
+        guard canUngroup else { return }
+        let gids = Set(selectedItems.compactMap(\.groupID))
+        guard !gids.isEmpty else { return }
+        for item in pageItems where item.groupID.map({ gids.contains($0) }) ?? false {
+            item.groupID = nil
+        }
+        touch()
+    }
+
+    private func groupKeyPress() -> KeyPress.Result {
+        guard editingID == nil, canGroup else { return .ignored }
+        groupSelected()
+        return .handled
+    }
+
+    private func ungroupKeyPress() -> KeyPress.Result {
+        guard editingID == nil, canUngroup else { return .ignored }
+        ungroupSelected()
+        return .handled
+    }
+
+    /// Context-menu Group/Ungroup acting on Finder-style targets (the whole
+    /// selection when the right-clicked item belongs to it, else just it).
+    private func groupTargeting(_ item: CanvasItem) {
+        if !selectedIDs.contains(item.id) {
+            selectedIDs = expandIDsForGroups([item.id])
+            editingID = nil
+        }
+        groupSelected()
+    }
+
+    private func ungroupTargeting(_ item: CanvasItem) {
+        if !selectedIDs.contains(item.id) {
+            selectedIDs = expandIDsForGroups([item.id])
+            editingID = nil
+        }
+        ungroupSelected()
+    }
+
+    // MARK: Multi-select resize
+
+    /// Items that fully scale (position + size). Pins keep a fixed frame and
+    /// drawings size to their ink, so both move with the layout but keep
+    /// their size (see `multiResizeLiveFrames`); locked items never resize.
+    private func isMultiScalable(_ item: CanvasItem) -> Bool {
+        !item.isLocked && item.kind != .note && item.kind != .drawing
+    }
+
+    /// Handle shows when 2+ unlocked items are selected (any mix — pins
+    /// and drawings ride along by position). Single-item resize stays in
+    /// `CanvasItemView`; this overlay owns the multi case.
+    private var canMultiResize: Bool {
+        guard selectedIDs.count >= 2, editingID == nil else { return false }
+        return selectedItems.filter({ !$0.isLocked }).count >= 2
+    }
+
+    /// Static union of the resizable selection (world; locked items are
+    /// excluded so the idle box matches the drag box). Live bounds during a
+    /// drag come from `multiResizeDisplayBounds`.
+    private var multiSelectionBounds: CGRect? {
+        let frames = selectedItems.filter({ !$0.isLocked }).map(\.frameRect)
+        return selectionUnion(frames: frames)
+    }
+
+    /// Bounds to draw: the live resized box while dragging, else the static
+    /// selection union.
+    private func multiResizeDisplayBounds() -> CGRect? {
+        if let orig = multiResizeBoundsOrig, !multiResizeIDs.isEmpty {
+            return multiResizeBounds(original: orig, dx: multiResizeDelta.width,
+                                     dy: multiResizeDelta.height, locked: multiResizeLocked)
+        }
+        return multiSelectionBounds
+    }
+
+    /// Live world frames for every item in the drag, or nil when idle.
+    /// Scalable members map through the bounds; pins/drawings move by
+    /// center so they ride the layout without changing size.
+    private func multiResizeLiveFrames() -> [UUID: CGRect]? {
+        guard let orig = multiResizeBoundsOrig, !multiResizeIDs.isEmpty else { return nil }
+        let next = multiResizeBounds(original: orig, dx: multiResizeDelta.width,
+                                     dy: multiResizeDelta.height, locked: multiResizeLocked)
+        let byID = Dictionary(uniqueKeysWithValues: pageItems.map { ($0.id, $0) })
+        var out: [UUID: CGRect] = [:]
+        out.reserveCapacity(multiResizeIDs.count)
+        for id in multiResizeIDs {
+            guard let base = multiResizeBase[id], let item = byID[id] else { continue }
+            if isMultiScalable(item) {
+                out[id] = scaledFrame(base, from: orig, to: next)
+            } else {
+                let c = CGPoint(x: base.midX, y: base.midY)
+                let nc = scaledPoint(c, from: orig, to: next)
+                out[id] = CGRect(x: nc.x - base.width / 2, y: nc.y - base.height / 2,
+                                 width: base.width, height: base.height)
+            }
+        }
+        return out
+    }
+
+    private var shiftActiveForResize: Bool {
+#if os(macOS)
+        if isShiftHeld { return true }
+        return NSEvent.modifierFlags.contains(.shift)
+#else
+        return isShiftHeld
+#endif
+    }
+
+    private func updateMultiResize(translation: CGSize) {
+        guard multiResizeBoundsOrig != nil, !multiResizeIDs.isEmpty else { return }
+        multiResizeDelta = CGSize(width: translation.width / liveViewport.scale,
+                                  height: translation.height / liveViewport.scale)
+        // Uniform by default so every member keeps its ratio; Shift frees
+        // the bounds aspect for non-uniform stretching.
+        multiResizeLocked = !shiftActiveForResize
+    }
+
+    private func endMultiResize(translation: CGSize) {
+        defer {
+            multiResizeIDs = []
+            multiResizeBase = [:]
+            multiResizeBoundsOrig = nil
+            multiResizeDelta = .zero
+            multiResizeLocked = false
+        }
+        guard let orig = multiResizeBoundsOrig, !multiResizeIDs.isEmpty else { return }
+        let delta = CGSize(width: translation.width / liveViewport.scale,
+                           height: translation.height / liveViewport.scale)
+        let locked = !shiftActiveForResize
+        let next = multiResizeBounds(original: orig, dx: delta.width, dy: delta.height, locked: locked)
+        guard next.width > 0, next.height > 0 else { return }
+        let byID = Dictionary(uniqueKeysWithValues: pageItems.map { ($0.id, $0) })
+        var changed = false
+        for id in multiResizeIDs {
+            guard let base = multiResizeBase[id], let item = byID[id], !item.isLocked else { continue }
+            if isMultiScalable(item) {
+                let f = scaledFrame(base, from: orig, to: next)
+                guard f.width > 0, f.height > 0 else { continue }
+                item.x = Double(f.minX)
+                item.y = Double(f.minY)
+                item.width = Double(max(1, f.width))
+                item.height = Double(max(1, f.height))
+                changed = true
+            } else {
+                let c = CGPoint(x: base.midX, y: base.midY)
+                let nc = scaledPoint(c, from: orig, to: next)
+                item.x = Double(nc.x - base.width / 2)
+                item.y = Double(nc.y - base.height / 2)
+                changed = true
+            }
+        }
+        if changed { touch() }
+    }
+
+    private func cancelMultiResize() {
+        multiResizeIDs = []
+        multiResizeBase = [:]
+        multiResizeBoundsOrig = nil
+        multiResizeDelta = .zero
+        multiResizeLocked = false
     }
 
     private func addItem(_ kind: ItemKind, shape: ShapeKind = .rectangle) {
@@ -1983,6 +2280,9 @@ struct CanvasView: View {
         lineHoverScreen = nil
         shapeDragStart = nil
         shapeDragCurrent = nil
+        groupDragIDs = []
+        groupDragOffset = .zero
+        cancelMultiResize()
     }
 
     /// Appends a blank page and flips to it. Structural, so one undo step.
@@ -2243,6 +2543,9 @@ struct CanvasView: View {
     private func duplicateSelected() {
         let originals = selectedItems.sorted { $0.zIndex < $1.zIndex }
         guard !originals.isEmpty else { return }
+        // Copies of a group stay grouped together (under a fresh ID), even
+        // for partial-group duplicates — ungrouped originals stay ungrouped.
+        let groupMap = remappedGroupIDs(for: originals.map(\.groupID))
         var top = pageItems.map(\.zIndex).max() ?? 0
         var newIDs: Set<UUID> = []
         for original in originals {
@@ -2273,6 +2576,7 @@ struct CanvasView: View {
             copy.videoDuration = original.videoDuration
             copy.pageIndex = original.pageIndex
             copy.tableData = original.tableData
+            if let gid = original.groupID { copy.groupID = groupMap[gid] }
             // Duplicates always start unlocked so a locked original never
             // spawns a copy the user can't immediately move.
             copy.isLocked = false
@@ -2290,6 +2594,15 @@ struct CanvasView: View {
     /// inside the selection keeps the whole selection as the target.
     @ViewBuilder
     private func arrangeMenu(for item: CanvasItem) -> some View {
+        arrangeOrderSection(for: item)
+        Divider()
+        arrangeGroupSection(for: item)
+        Divider()
+        arrangeLockSection(for: item)
+    }
+
+    @ViewBuilder
+    private func arrangeOrderSection(for item: CanvasItem) -> some View {
         Button { arrangeTargeting(item, .bringToFront) } label: {
             Label(ArrangeOperation.bringToFront.title,
                   systemImage: ArrangeOperation.bringToFront.symbol)
@@ -2310,9 +2623,24 @@ struct CanvasView: View {
                   systemImage: ArrangeOperation.sendToBack.symbol)
         }
         .keyboardShortcut("b", modifiers: [.command, .shift])
+    }
 
-        Divider()
+    @ViewBuilder
+    private func arrangeGroupSection(for item: CanvasItem) -> some View {
+        Button { groupTargeting(item) } label: {
+            Label("Group", systemImage: "square.on.square.squareshape.controlhandles")
+        }
+        .keyboardShortcut("g", modifiers: .command)
+        .disabled(!canGroupTargeting(item))
+        Button { ungroupTargeting(item) } label: {
+            Label("Ungroup", systemImage: "square.on.square")
+        }
+        .keyboardShortcut("g", modifiers: [.command, .shift])
+        .disabled(!canUngroupTargeting(item))
+    }
 
+    @ViewBuilder
+    private func arrangeLockSection(for item: CanvasItem) -> some View {
         // Single toggle: locks when any target is unlocked, otherwise unlocks.
         // The target set mirrors Finder-style selection (see toggleLockTargeting).
         let shouldLock = shouldLockTargets(for: item)
@@ -2321,6 +2649,15 @@ struct CanvasView: View {
                   systemImage: shouldLock ? "lock.fill" : "lock.open.fill")
         }
         .keyboardShortcut("l", modifiers: [.command, .shift])
+    }
+
+    /// Group menu availability for Finder-style targets.
+    private func canGroupTargeting(_ item: CanvasItem) -> Bool {
+        canGroupSelection(count: contextTargets(for: item).count)
+    }
+
+    private func canUngroupTargeting(_ item: CanvasItem) -> Bool {
+        canUngroupSelection(selectedGroupIDs: contextTargets(for: item).map(\.groupID))
     }
 
     /// Items the context menu acts on: the whole selection when the
@@ -2343,7 +2680,7 @@ struct CanvasView: View {
 
     private func toggleLockTargeting(_ item: CanvasItem) {
         if !selectedIDs.contains(item.id) {
-            selectedIDs = [item.id]
+            selectedIDs = expandIDsForGroups([item.id])
             editingID = nil
         }
         let targets = selectedItems
@@ -2376,7 +2713,7 @@ struct CanvasView: View {
 
     private func arrangeTargeting(_ item: CanvasItem, _ operation: ArrangeOperation) {
         if !selectedIDs.contains(item.id) {
-            selectedIDs = [item.id]
+            selectedIDs = expandIDsForGroups([item.id])
             editingID = nil
         }
         arrangeSelected(operation)

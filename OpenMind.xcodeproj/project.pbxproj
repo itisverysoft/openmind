@@ -67,6 +67,8 @@
 		AA0000000000000000000062 /* NetworkMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000062 /* NetworkMedia.swift */; };
 		AA0000000000000000000063 /* NetworkMediaTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000063 /* NetworkMediaTests.swift */; };
 		AA0000000000000000000064 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000064 /* AboutView.swift */; };
+		AA0000000000000000000065 /* CanvasGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000065 /* CanvasGrouping.swift */; };
+		AA0000000000000000000066 /* GroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000066 /* GroupingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -139,6 +141,8 @@
 		AA1000000000000000000062 /* NetworkMedia.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMedia.swift; sourceTree = "<group>"; };
 		AA1000000000000000000063 /* NetworkMediaTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMediaTests.swift; sourceTree = "<group>"; };
 		AA1000000000000000000064 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		AA1000000000000000000065 /* CanvasGrouping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasGrouping.swift; sourceTree = "<group>"; };
+		AA1000000000000000000066 /* GroupingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupingTests.swift; sourceTree = "<group>"; };
 		AA1000000000000000000014 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AA1000000000000000000020 /* ViewportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewportTests.swift; sourceTree = "<group>"; };
 		AA10000000000000000000A1 /* OpenMind.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OpenMind.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -226,6 +230,7 @@
 				AA1000000000000000000056 /* YouTubeEmbed.swift */,
 				AA1000000000000000000059 /* CanvasVideo.swift */,
 				AA1000000000000000000062 /* NetworkMedia.swift */,
+				AA1000000000000000000065 /* CanvasGrouping.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -299,6 +304,7 @@
 				AA1000000000000000000058 /* YouTubeTests.swift */,
 				AA1000000000000000000061 /* VideoTests.swift */,
 				AA1000000000000000000063 /* NetworkMediaTests.swift */,
+				AA1000000000000000000066 /* GroupingTests.swift */,
 			);
 			path = OpenMindTests;
 			sourceTree = "<group>";
@@ -454,6 +460,7 @@
 				AA0000000000000000000060 /* VideoItemView.swift in Sources */,
 				AA0000000000000000000062 /* NetworkMedia.swift in Sources */,
 				AA0000000000000000000064 /* AboutView.swift in Sources */,
+				AA0000000000000000000065 /* CanvasGrouping.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -477,6 +484,7 @@
 				AA0000000000000000000058 /* YouTubeTests.swift in Sources */,
 				AA0000000000000000000061 /* VideoTests.swift in Sources */,
 				AA0000000000000000000063 /* NetworkMediaTests.swift in Sources */,
+				AA0000000000000000000066 /* GroupingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
