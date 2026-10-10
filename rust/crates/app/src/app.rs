@@ -962,6 +962,11 @@ impl OpenMindApp {
                 ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
             let painter = ui.painter().with_clip_rect(rect);
 
+            // Read BEFORE locking for input: `input()` runs its closure
+            // while holding the context lock, and parking_lot RwLocks are
+            // not re-entrant — querying the context in here deadlocks the
+            // main thread (spinning cursor, forever).
+            let typing = ui.ctx().egui_wants_keyboard_input();
             let input = ui.ctx().input(|i| FrameInput {
                 pos: i.pointer.latest_pos(),
                 primary_down: i.pointer.primary_down(),
@@ -990,7 +995,7 @@ impl OpenMindApp {
                 double_clicked: i
                     .pointer
                     .button_double_clicked(egui::PointerButton::Primary),
-                typing: ui.ctx().egui_wants_keyboard_input(),
+                typing,
             });
             let on_canvas = input.pos.is_some_and(|p| rect.contains(p));
             let editing = self.editing.is_some();
