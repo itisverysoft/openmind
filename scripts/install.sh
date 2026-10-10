@@ -9,11 +9,11 @@
 #   ./scripts/install.sh --uninstall      remove installed bins, keep the build
 #   PREFIX=DIR ./scripts/install.sh       same as --prefix DIR
 #
-# Today the workspace is libraries only (board + ink), so there is nothing to
-# copy or open yet — the script still verifies the full pipeline (sibling
-# checkout, toolchain, release build, tests) and installs + opens every binary
-# crate the moment one exists (e.g. the future `app` crate with src/main.rs).
-# Exit status is non-zero on any failure.
+# Installs every binary crate to $PREFIX/bin, builds a minimal OpenMind.app
+# bundle on macOS (Dock icon + activation via `open`), adds a .desktop entry
+# on Linux, then opens the app — unless one is already running (strokes live
+# in memory, so running instances are never killed). Fails loudly if the app
+# dies right after launch. Exit status is non-zero on any failure.
 #
 # POSIX sh: runs on macOS and Linux. No sudo needed for the default prefix;
 # use `--prefix /usr/local` (with sudo) for a system-wide install.
@@ -114,7 +114,17 @@ if [ "$UNINSTALL" -eq 1 ]; then
             removed=$((removed + 1))
         fi
     done
-    [ "$removed" -gt 0 ] || log "nothing installed in $BIN_DIR"
+    if [ -d "$PREFIX/OpenMind.app" ]; then
+        rm -rf "$PREFIX/OpenMind.app"
+        log "removed $PREFIX/OpenMind.app"
+        removed=$((removed + 1))
+    fi
+    if [ -f "$HOME/.local/share/applications/openmind.desktop" ]; then
+        rm -f "$HOME/.local/share/applications/openmind.desktop"
+        log "removed openmind.desktop"
+        removed=$((removed + 1))
+    fi
+    [ "$removed" -gt 0 ] || log "nothing installed in $PREFIX"
     exit 0
 fi
 
@@ -179,9 +189,90 @@ if [ -z "$MAIN_BIN" ]; then
     for b in $INSTALLED_BINS; do MAIN_BIN="$b"; break; done
 fi
 
-log "opening $BIN_DIR/$MAIN_BIN ..."
-# Detached (survives this shell): args after `--` are passed to the app,
-# e.g. `./scripts/install.sh -- board.vsom`.
-# shellcheck disable=SC2086
-nohup "$BIN_DIR/$MAIN_BIN" $OPEN_ARGS >/dev/null 2>&1 &
-log "launched pid $!"
+# Never pile up instances: strokes live in memory, so killing a running app
+# would lose the canvas. Relaunch only when nothing is running.
+if pgrep -x "$MAIN_BIN" >/dev/null 2>&1; then
+    log "already running (pid $(pgrep -x "$MAIN_BIN" | head -n 1)) — new build installed,"
+    log "restart the app to use it. Your current canvas is untouched."
+    exit 0
+fi
+
+# --- 6a. macOS: minimal .app bundle + `open` (Dock icon, activation) --------
+open_macos_app() {
+    APP_DIR="$PREFIX/OpenMind.app"
+    BIN_PATH="$APP_DIR/Contents/MacOS/$MAIN_BIN"
+    mkdir -p "$APP_DIR/Contents/MacOS"
+    cp -f "$BIN_DIR/$MAIN_BIN" "$BIN_PATH"
+    chmod 755 "$BIN_PATH"
+    cat > "$APP_DIR/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>$MAIN_BIN</string>
+    <key>CFBundleIdentifier</key>
+    <string>site.verysoft.openmind</string>
+    <key>CFBundleName</key>
+    <string>OpenMind</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    log "bundled $APP_DIR"
+    # `open` activates properly (window to front, Dock icon). Args after
+    # `--` reach the app, e.g. `./scripts/install.sh -- board.vsom`.
+    # shellcheck disable=SC2086
+    if [ -n "$OPEN_ARGS" ]; then
+        open "$APP_DIR" --args $OPEN_ARGS
+    else
+        open "$APP_DIR"
+    fi
+}
+
+# --- 6b. Linux: .desktop entry + detached launch with a log -----------------
+open_linux_app() {
+    DESKTOP_DIR="$HOME/.local/share/applications"
+    mkdir -p "$DESKTOP_DIR"
+    cat > "$DESKTOP_DIR/openmind.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=OpenMind
+Comment=Infinite-canvas whiteboard
+Exec=$BIN_DIR/$MAIN_BIN
+Terminal=false
+Categories=Graphics;
+EOF
+    log "wrote $DESKTOP_DIR/openmind.desktop"
+    LOG_DIR="$HOME/.local/share/openmind"
+    mkdir -p "$LOG_DIR"
+    # Detached (survives this shell); stderr kept so launch failures are visible.
+    # shellcheck disable=SC2086
+    nohup "$BIN_DIR/$MAIN_BIN" $OPEN_ARGS >"$LOG_DIR/openmind.log" 2>&1 &
+    log "launched pid $! (log: $LOG_DIR/openmind.log)"
+}
+
+OS="$(uname -s)"
+if [ "$OS" = "Darwin" ]; then
+    open_macos_app
+else
+    open_linux_app
+fi
+
+# Fail loudly if the app died on launch (silent death was the whole bug).
+sleep 2
+if pgrep -x "$MAIN_BIN" >/dev/null 2>&1; then
+    log "OpenMind is running (pid $(pgrep -x "$MAIN_BIN" | head -n 1))"
+else
+    fail "the app exited right after launch. Run it directly to see the error:
+  $BIN_DIR/$MAIN_BIN $OPEN_ARGS"
+fi
