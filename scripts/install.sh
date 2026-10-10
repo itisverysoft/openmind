@@ -1,17 +1,19 @@
 #!/bin/sh
 # install.sh — build, test, and install the OpenMind Rust workspace.
 #
-#   ./scripts/install.sh                  build release, run tests, install bins to ~/.local/bin
+#   ./scripts/install.sh                  build release, run tests, install bins to ~/.local/bin, open the app
 #   ./scripts/install.sh --prefix DIR     install bins to DIR/bin instead
 #   ./scripts/install.sh --no-test        skip `cargo test`
+#   ./scripts/install.sh --no-open        install without opening the app
+#   ./scripts/install.sh -- file.vsom     open the app with a file after install
 #   ./scripts/install.sh --uninstall      remove installed bins, keep the build
 #   PREFIX=DIR ./scripts/install.sh       same as --prefix DIR
 #
 # Today the workspace is libraries only (board + ink), so there is nothing to
-# copy yet — the script still verifies the full pipeline (sibling checkout,
-# toolchain, release build, tests) and installs every binary crate the moment
-# one exists (e.g. the future `app` crate with src/main.rs). Exit status is
-# non-zero on any failure.
+# copy or open yet — the script still verifies the full pipeline (sibling
+# checkout, toolchain, release build, tests) and installs + opens every binary
+# crate the moment one exists (e.g. the future `app` crate with src/main.rs).
+# Exit status is non-zero on any failure.
 #
 # POSIX sh: runs on macOS and Linux. No sudo needed for the default prefix;
 # use `--prefix /usr/local` (with sudo) for a system-wide install.
@@ -22,6 +24,8 @@ PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR=""
 RUN_TESTS=1
 UNINSTALL=0
+OPEN_APP=1
+OPEN_ARGS=""
 
 usage() {
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -40,7 +44,9 @@ while [ $# -gt 0 ]; do
         --bin-dir=*)
             BIN_DIR="${1#--bin-dir=}"; shift ;;
         --no-test) RUN_TESTS=0; shift ;;
+        --no-open) OPEN_APP=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
+        --) shift; OPEN_ARGS="$*"; break ;;
         -h|--help) usage; exit 0 ;;
         *) echo "error: unknown flag $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -126,6 +132,7 @@ fi
 # --- 5. Install ---------------------------------------------------------------
 mkdir -p "$BIN_DIR"
 installed=0
+INSTALLED_BINS=""
 for bin in $(discover_bins); do
     src="$WORKSPACE/target/release/$bin"
     if [ ! -x "$src" ]; then
@@ -136,11 +143,13 @@ for bin in $(discover_bins); do
     chmod 755 "$BIN_DIR/$bin"
     log "installed $BIN_DIR/$bin"
     installed=$((installed + 1))
+    INSTALLED_BINS="$INSTALLED_BINS $bin"
 done
 
 if [ "$installed" -eq 0 ]; then
     log "ok: build + tests passed — workspace currently ships libraries only,"
-    log "ok: nothing to copy. Binary crates (src/main.rs) will install here automatically."
+    log "ok: nothing to copy or open. Binary crates (src/main.rs) will install"
+    log "ok: and open here automatically."
     exit 0
 fi
 
@@ -149,3 +158,30 @@ case ":$PATH:" in
     *) log "note: $BIN_DIR is not on PATH — add: export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 log "done: $installed binary(ies) installed to $BIN_DIR"
+
+# --- 6. Open ------------------------------------------------------------------
+if [ "$OPEN_APP" -eq 0 ]; then
+    log "leaving the app closed (--no-open)"
+    exit 0
+fi
+
+# The main binary: prefer `openmind`, then `openmind-app`, else the first one.
+MAIN_BIN=""
+for b in $INSTALLED_BINS; do
+    if [ "$b" = "openmind" ]; then MAIN_BIN="$b"; break; fi
+done
+if [ -z "$MAIN_BIN" ]; then
+    for b in $INSTALLED_BINS; do
+        if [ "$b" = "openmind-app" ]; then MAIN_BIN="$b"; break; fi
+    done
+fi
+if [ -z "$MAIN_BIN" ]; then
+    for b in $INSTALLED_BINS; do MAIN_BIN="$b"; break; done
+fi
+
+log "opening $BIN_DIR/$MAIN_BIN ..."
+# Detached (survives this shell): args after `--` are passed to the app,
+# e.g. `./scripts/install.sh -- board.vsom`.
+# shellcheck disable=SC2086
+nohup "$BIN_DIR/$MAIN_BIN" $OPEN_ARGS >/dev/null 2>&1 &
+log "launched pid $!"
