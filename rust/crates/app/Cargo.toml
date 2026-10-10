@@ -1,0 +1,17 @@
+[package]
+name = "openmind"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenMind whiteboard desktop app (eframe canvas over the board + ink crates)"
+
+[[bin]]
+name = "openmind"
+path = "src/main.rs"
+
+[dependencies]
+openmind-board.workspace = true
+openmind-ink.workspace = true
+egui.workspace = true
+eframe.workspace = true

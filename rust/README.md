@@ -18,6 +18,8 @@ rust/
     ink/                pressure-aware inking core on the vector stack:
                         resample + smooth + variable-width outline paths,
                         eraser hit-testing, Swift StrokeCodec `[[x,y]]` compat
+    app/                `openmind` desktop app (eframe canvas: draw with
+                        pen/highlighter, erase, pan/zoom, dot grid)
 ```
 
 Later milestones add: `canvas` (viewport/selection engine), `render` (board →
