@@ -12,6 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 openmind-board.workspace = true
+openmind-canvas.workspace = true
 openmind-ink.workspace = true
 egui.workspace = true
 eframe.workspace = true
+rfd.workspace = true
+image.workspace = true

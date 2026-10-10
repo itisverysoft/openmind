@@ -15,8 +15,11 @@ serde_json = "1"
 base64 = "0.22"
 openmind-board = { path = "crates/board" }
 openmind-ink = { path = "crates/ink" }
+openmind-canvas = { path = "crates/canvas" }
 egui = "=0.36.2"
 eframe = "=0.36.2"
+rfd = "=0.17.2"
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 # Robust vector stack, reused by path (never copied): the crates live in the
 # sibling `openmind-vector` checkout, so both repos must share one parent dir:
 #   <parent>/openmind            (this repo, branch openmind-rust)

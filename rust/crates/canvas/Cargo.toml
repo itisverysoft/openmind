@@ -1,0 +1,13 @@
+[package]
+name = "openmind-canvas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OpenMind canvas document: items, selection, groups, arrange, undo, .vsom mapping"
+
+[dependencies]
+openmind-board.workspace = true
+openmind-ink.workspace = true
+serde_json.workspace = true
+image.workspace = true

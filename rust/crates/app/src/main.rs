@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod color;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
