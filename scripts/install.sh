@@ -149,7 +149,12 @@ for bin in $(discover_bins); do
         log "warn: expected binary missing: $src (skipping)"
         continue
     fi
-    cp -f "$src" "$BIN_DIR/$bin"
+    # Replace (never overwrite in place): `cp -f` over a RUNNING copy
+    # rewrites its mapped pages and macOS SIGKILLs it with
+    # "Code Signature Invalid". rm+cp gives the new build a fresh inode so
+    # a running instance keeps its old mapping and survives the install.
+    rm -f "$BIN_DIR/$bin"
+    cp "$src" "$BIN_DIR/$bin"
     chmod 755 "$BIN_DIR/$bin"
     log "installed $BIN_DIR/$bin"
     installed=$((installed + 1))
@@ -202,7 +207,9 @@ open_macos_app() {
     APP_DIR="$PREFIX/OpenMind.app"
     BIN_PATH="$APP_DIR/Contents/MacOS/$MAIN_BIN"
     mkdir -p "$APP_DIR/Contents/MacOS"
-    cp -f "$BIN_DIR/$MAIN_BIN" "$BIN_PATH"
+    # Same replace-not-overwrite rule as above: the bundle may be running.
+    rm -f "$BIN_PATH"
+    cp "$BIN_DIR/$MAIN_BIN" "$BIN_PATH"
     chmod 755 "$BIN_PATH"
     cat > "$APP_DIR/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
