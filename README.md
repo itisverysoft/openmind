@@ -1,66 +1,60 @@
-# OpenMind
+# OpenMind (Rust rewrite)
 
-An infinite-canvas whiteboard for macOS and iOS, built with SwiftUI and SwiftData.
-Drop stickies, text, shapes, drawings, tables, pin notes, images, PDFs, audio,
-video, and YouTube embeds on a freeform canvas — then export to PNG, PDF, SVG,
-or shareable `.vsom` board files.
+An infinite-canvas whiteboard, rewritten in Rust — built like
+[`openmind-vector`](https://github.com/itisverysoft/openmind-vector): a Cargo
+workspace of small crates with a robust vector inking core, targeting desktop
+(macOS/Windows/Linux) and web.
 
-## Features
+> **Branch note:** this branch (`openmind-rust`) holds the Rust rewrite. The
+> original SwiftUI + SwiftData app lives on `main` and in this branch's
+> history; `.vsom` board files stay compatible between the two.
+
+## Features (target parity with the Swift app)
 
 - Infinite canvas with pan, zoom, and optional fixed-size sheets (with pages)
-- Stickies, text boxes (rich text), shapes, connectors, freehand drawing, tables, pin notes
-- Images (photo picker, files, drag & drop, paste, image URLs)
-- Audio (microphone voice notes, audio files, audio URLs) and video (files, video URLs)
-- YouTube embeds (watch / share / Shorts links)
+- Stickies, text boxes, shapes, connectors, freehand drawing, tables, pin notes
+- Images, PDFs, audio, video, and YouTube embeds
 - Multi-select, marquee selection, duplicate, arrange, lock, undo/redo
 - Board export: PNG, PDF, SVG, and `.vsom` files (open/import across devices)
 
+## Layout
+
+```text
+rust/
+  crates/
+    board/   whiteboard document model + `.vsom` files (Swift-compatible)
+    ink/     pressure-aware inking on the vector stack (geom + brush tracks)
+```
+
+See [`rust/README.md`](rust/README.md) for milestones and conventions.
+
 ## Requirements
 
-- Xcode 16+
-- macOS 14+ / iOS 17+ SDKs
-- No API keys, accounts, or backend services needed — everything is local.
+- Rust 1.85+ (`rustup show` to verify)
+- A sibling checkout of `openmind-vector` (path dependencies — see below)
+- No API keys, accounts, or backend services — everything is local.
 
-## Build & run
+## Build & test
 
-Open `OpenMind.xcodeproj` in Xcode and run the `OpenMind` scheme,
-or from the terminal:
+Both repos must sit side by side (`openmind-vector` provides the `geom`,
+`brush`, `color`, `doc`, and `render` crates by path):
 
-```sh
-# Debug build for macOS
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-xcodebuild -project OpenMind.xcodeproj -scheme OpenMind \
-  -destination 'platform=macOS' build
-
-# Release app bundle (ad-hoc signed; optionally installs to /Applications)
-./scripts/build-app.sh
-./scripts/build-app.sh --install
+```text
+<parent>/openmind            this repo (branch openmind-rust)
+<parent>/openmind-vector     itisverysoft/openmind-vector
 ```
 
-To sign with your own identity:
-
 ```sh
-CODESIGN_IDENTITY="Apple Development: you@example.com" ./scripts/build-app.sh
-```
-
-## Tests
-
-```sh
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-xcodebuild test -project OpenMind.xcodeproj -scheme OpenMind \
-  -destination 'platform=macOS'
+cd rust
+cargo build
+cargo test
 ```
 
 ## Privacy
 
 OpenMind collects nothing: no analytics, no telemetry, no accounts.
-Network access happens only when you ask for it (attaching a media URL,
-playing a YouTube embed). Board data stays on-device in SwiftData.
-
-## Contributing
-
-Issues and pull requests are welcome. Please keep changes covered by tests
-where practical (`OpenMindTests/`) and match the existing code style.
+Network access happens only when you ask for it (attaching a media URL).
+Board data stays on-device.
 
 ## About VerySoft
 
