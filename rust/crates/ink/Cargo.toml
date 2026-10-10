@@ -1,0 +1,18 @@
+[package]
+name = "openmind-ink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pressure-aware inking core for OpenMind on the vector stack (geom + brush tracks)"
+
+[dependencies]
+vectorcraft-geom.workspace = true
+vectorcraft-brush.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+vectorcraft-doc.workspace = true
+vectorcraft-color.workspace = true
+vectorcraft-render.workspace = true

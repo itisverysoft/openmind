@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+# Robust vector stack, reused by path (never copied): the crates live in the
+# sibling `openmind-vector` checkout, so both repos must share one parent dir:
+#   <parent>/openmind            (this repo, branch openmind-rust)
+#   <parent>/openmind-vector     (itisverysoft/openmind-vector)
+vectorcraft-geom = { path = "../../openmind-vector/crates/geom" }
+vectorcraft-brush = { path = "../../openmind-vector/crates/brush" }
+vectorcraft-color = { path = "../../openmind-vector/crates/color" }
+vectorcraft-doc = { path = "../../openmind-vector/crates/doc" }
+vectorcraft-render = { path = "../../openmind-vector/crates/render" }
