@@ -45,6 +45,116 @@ func imagePixelSize(from data: Data) -> CGSize? {
     return CGSize(width: w, height: h)
 }
 
+/// In-memory image resources (decoded bitmap + pixel dimensions) so
+/// frequently evaluated view bodies never re-decode the same bytes on every
+/// selection change.
+///
+/// Keyed by item ID plus a data fingerprint (byte count + leading bytes), so
+/// replacing the image bytes while keeping the ID invalidates the entry.
+/// Source `Data` stays the authoritative persisted content; the cache only
+/// holds derived render resources. Bounded via `NSCache` (count + cost caps,
+/// auto-eviction under pressure) so boards with many large images never
+/// retain every bitmap indefinitely. `NSCache` is thread-safe; a benign race
+/// only repeats one decode. Negative results (unreadable bytes) are cached
+/// too so corrupt images don't re-decode in every body evaluation.
+enum ImageResourceCache {
+    /// Leading bytes compared for fingerprinting. O(1) per lookup.
+    private static let prefixLength = 256
+
+    private static let imageCache: NSCache<NSString, ImageEntry> = {
+        let c = NSCache<NSString, ImageEntry>()
+        c.countLimit = 100
+        c.totalCostLimit = 150 * 1024 * 1024
+        return c
+    }()
+    private static let sizeCache: NSCache<NSString, SizeEntry> = {
+        let c = NSCache<NSString, SizeEntry>()
+        c.countLimit = 1000
+        return c
+    }()
+
+    private final class ImageEntry: NSObject {
+        /// Nil image is a cached negative (unreadable bytes).
+        let image: PlatformImage?
+        let length: Int
+        let prefix: Data
+        init(image: PlatformImage?, length: Int, prefix: Data) {
+            self.image = image
+            self.length = length
+            self.prefix = prefix
+        }
+        func matches(_ data: Data) -> Bool {
+            data.count == length && data.prefix(prefix.count) == prefix
+        }
+    }
+
+    private final class SizeEntry: NSObject {
+        /// Nil size is a cached negative (unreadable bytes).
+        let size: CGSize?
+        let length: Int
+        let prefix: Data
+        init(size: CGSize?, length: Int, prefix: Data) {
+            self.size = size
+            self.length = length
+            self.prefix = prefix
+        }
+        func matches(_ data: Data) -> Bool {
+            data.count == length && data.prefix(prefix.count) == prefix
+        }
+    }
+
+    private static func fingerprint(_ data: Data) -> (length: Int, prefix: Data) {
+        (data.count, data.prefix(prefixLength))
+    }
+
+    private static func key(_ id: UUID) -> NSString {
+        id.uuidString as NSString
+    }
+
+    /// Cached decode (nil for missing/unreadable). Computes once per image.
+    static func platformImage(forItem id: UUID, data: Data?) -> PlatformImage? {
+        guard let data, !data.isEmpty else { return nil }
+        let k = key(id)
+        if let hit = imageCache.object(forKey: k), hit.matches(data) {
+            return hit.image
+        }
+        let image = makePlatformImage(from: data)
+        let (length, prefix) = fingerprint(data)
+        imageCache.setObject(ImageEntry(image: image, length: length, prefix: prefix),
+                             forKey: k, cost: data.count)
+        return image
+    }
+
+    /// Cached pixel dimensions (nil for unreadable). Computes once per image.
+    static func pixelSize(forItem id: UUID, data: Data) -> CGSize? {
+        guard !data.isEmpty else { return nil }
+        let k = key(id)
+        if let hit = sizeCache.object(forKey: k), hit.matches(data) {
+            return hit.size
+        }
+        let size = imagePixelSize(from: data)
+        let (length, prefix) = fingerprint(data)
+        sizeCache.setObject(SizeEntry(size: size, length: length, prefix: prefix), forKey: k)
+        return size
+    }
+
+    /// Pre-populates dimensions already known at import so the first display
+    /// never touches ImageIO in a view body.
+    static func storePixelSize(_ size: CGSize?, forItem id: UUID, data: Data) {
+        guard !data.isEmpty else { return }
+        let (length, prefix) = fingerprint(data)
+        sizeCache.setObject(SizeEntry(size: size, length: length, prefix: prefix), forKey: key(id))
+    }
+
+    /// Drops derived resources for `id` (call when the image bytes are
+    /// replaced; stale fingerprints also self-invalidate on mismatch).
+    static func invalidate(forItem id: UUID) {
+        let k = key(id)
+        imageCache.removeObject(forKey: k)
+        sizeCache.removeObject(forKey: k)
+    }
+}
+
 /// True when ImageIO recognises the bytes as an image.
 func isImageData(_ data: Data) -> Bool {
     guard !data.isEmpty,

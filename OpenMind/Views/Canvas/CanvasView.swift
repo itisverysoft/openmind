@@ -214,12 +214,17 @@ struct CanvasView: View {
     /// One canvas item + its context menu. Split from `itemsLayer` so the
     /// type-checker sees small expressions instead of one giant ForEach.
     private func itemRow(for item: CanvasItem, vp: Viewport, liveFrame: CGRect?) -> some View {
-        CanvasItemView(
+        // Item-specific resize flag (not `selectedIDs.count == 1` for every
+        // row): stays false→false for unselected items when selection goes
+        // 0→1 or 1→2, so selection changes invalidate fewer rows. The view
+        // still enforces kind/editing/lock rules before showing the handle.
+        let isSingleSelected = selectedIDs.count == 1 && selectedIDs.contains(item.id)
+        let row = CanvasItemView(
             item: item,
             viewport: vp,
             isSelected: selectedIDs.contains(item.id),
             isEditing: item.id == editingID,
-            showResize: selectedIDs.count == 1,
+            showResize: isSingleSelected,
             richController: richController,
             tableSelection: $tableSelectedCells,
             tableAnchor: $tableAnchorCell,
@@ -227,6 +232,7 @@ struct CanvasView: View {
             shiftHeld: isShiftHeld,
             liveFrame: liveFrame,
             groupOffset: groupDragOffset,
+            hoverEnabled: tool == .select,
             onSelect: { select(item) },
             onBeginEditing: { beginEditing(item) },
             onCommit: touch,
@@ -234,7 +240,7 @@ struct CanvasView: View {
             onDragChanged: { updateGroupDrag(item, translation: $0) },
             onDragEnded: { endGroupDrag(translation: $0) }
         )
-        .contextMenu {
+        return row.contextMenu {
             arrangeMenu(for: item)
         }
     }
@@ -1779,7 +1785,14 @@ struct CanvasView: View {
             }
         } else {
             if editingID != item.id { editingID = nil }
-            selectedIDs = expandIDsForGroups(members)
+            // Fast path: expanding an ungrouped ID is a no-op, so skip the
+            // full page scan that `expandIDsForGroups` performs. Grouped
+            // clicks keep the full expansion below.
+            if item.groupID == nil {
+                selectedIDs = members
+            } else {
+                selectedIDs = expandIDsForGroups(members)
+            }
         }
     }
 
@@ -2089,7 +2102,11 @@ struct CanvasView: View {
         guard let stored = downscaledImageData(from: data),
               isImageData(stored)
         else { return }
-        let pixelSize = imagePixelSize(from: stored) ?? ItemKind.image.defaultSize
+        // True dimensions (nil only for unreadable bytes): cached verbatim so
+        // later lookups match uncached behavior; the frame falls back to a
+        // default size when dimensions are unknown.
+        let truePixelSize = imagePixelSize(from: stored)
+        let pixelSize = truePixelSize ?? ItemKind.image.defaultSize
         let size = fittedWorldSize(for: pixelSize)
         let origin: CGPoint
         if let c = worldCenter {
@@ -2105,6 +2122,9 @@ struct CanvasView: View {
         item.width = Double(size.width)
         item.height = Double(size.height)
         item.imageData = stored
+        // Dimensions are already known: pre-populate the view cache so the
+        // first display never touches ImageIO in a view body.
+        ImageResourceCache.storePixelSize(truePixelSize, forItem: item.id, data: stored)
         context.insert(item)
         item.board = board
         item.pageIndex = clampedPage

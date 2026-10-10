@@ -92,7 +92,9 @@ struct ItemBodyView: View {
         return ZStack {
             RoundedRectangle(cornerRadius: corner)
                 .fill(Color.gray.opacity(0.15))
-            if let platform = makePlatformImage(from: item.imageData) {
+            // Cached decode (not `makePlatformImage(from:)`): view bodies
+            // must never re-decode every image on each selection change.
+            if let platform = ImageResourceCache.platformImage(forItem: item.id, data: item.imageData) {
                 platformImageFill(platform)
             } else {
                 VStack(spacing: 4 * scale) {
@@ -123,7 +125,10 @@ struct ItemBodyView: View {
         return ZStack {
             RoundedRectangle(cornerRadius: corner)
                 .fill(Color.white)
-            if let data = item.pdfData, pdfPageCount(data) > 0 {
+            // Cached count (not `pdfPageCount(data)`): view bodies must never
+            // re-parse the document on every selection change. Invalid PDFs
+            // yield 0 and fall through to the placeholder below.
+            if let data = item.pdfData, item.pdfCount > 0 {
                 PDFPageImage(cacheKey: item.id.uuidString,
                              data: data,
                              page: item.clampedPDFPage,

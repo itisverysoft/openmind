@@ -30,6 +30,10 @@ struct CanvasItemView: View {
     /// group drag is in flight. Owned by CanvasView so all selected items
     /// move together; this view itself holds no move state.
     var groupOffset: CGSize = .zero
+    /// Hover affordance only makes sense in selection mode. Plumbed from
+    /// CanvasView (`tool == .select`); changes only when the tool changes,
+    /// so it never invalidates rows on selection clicks.
+    var hoverEnabled: Bool = true
 
     var onSelect: () -> Void = {}
     var onBeginEditing: () -> Void = {}
@@ -41,6 +45,11 @@ struct CanvasItemView: View {
     /// to world points, updates `groupOffset`, and commits on end.
     var onDragChanged: (CGSize) -> Void = { _ in }
     var onDragEnded: (CGSize) -> Void = { _ in }
+
+    /// Pointer currently over this item. Local `@State` (not lifted) so
+    /// hover highlights never re-render sibling rows — only this row updates
+    /// on enter/exit.
+    @State private var isHovering = false
 
     // Live, not-yet-saved resize state, in WORLD points.
     @State private var resizeDelta: CGSize = .zero
@@ -114,7 +123,10 @@ struct CanvasItemView: View {
                 return size.width / size.height
             }
         } else if let data = item.imageData,
-                  let px = imagePixelSize(from: data),
+                  // Cached dimensions (not `imagePixelSize(from:)`): view
+                  // bodies must never re-create an ImageIO source per item
+                  // on each selection change.
+                  let px = ImageResourceCache.pixelSize(forItem: item.id, data: data),
                   px.width > 0, px.height > 0 {
             return px.width / px.height
         }
@@ -188,7 +200,11 @@ struct CanvasItemView: View {
                      tableShiftHeld: tableShiftHeld)
             .frame(width: displaySize.width, height: displaySize.height)
             .overlay {
-                if isSelected { selectionOutline }
+                if isSelected {
+                    selectionOutline
+                } else if hoverEnabled && isHovering {
+                    hoverOutline
+                }
             }
             .overlay(alignment: .bottomTrailing) {
                 // Pins keep their fixed frame: movable, never resizable.
@@ -211,6 +227,7 @@ struct CanvasItemView: View {
             // select the background instead of deselecting. Marquee-select
             // the page to reach its lock badge; selection restores hits.
             .allowsHitTesting(!isBackgroundPDF || isSelected)
+            .onHover { isHovering = $0 }
             .offset(x: displayOrigin.x, y: displayOrigin.y)
     }
 
@@ -240,6 +257,30 @@ struct CanvasItemView: View {
                 }
             }
         }
+        .allowsHitTesting(false)
+    }
+
+    /// Hover affordance in selection mode: same shape as the selection
+    /// outline at 50% opacity. Hidden once selected (the full outline wins).
+    private var hoverOutline: some View {
+        Group {
+            if item.isLocked {
+                if isNote {
+                    Circle().stroke(Color.gray, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                } else {
+                    Rectangle()
+                        .stroke(Color.gray, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                }
+            } else {
+                if isNote {
+                    Circle().stroke(Color.accentColor, lineWidth: 2)
+                } else {
+                    Rectangle()
+                        .stroke(Color.accentColor, lineWidth: 2)
+                }
+            }
+        }
+        .opacity(0.5)
         .allowsHitTesting(false)
     }
 

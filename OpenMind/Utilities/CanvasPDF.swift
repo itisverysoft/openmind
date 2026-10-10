@@ -200,6 +200,10 @@ func createPDFBoard(data: Data, fileName: String, context: ModelContext) -> Boar
         // Locked background: annotations layer above and the page itself
         // can never be dragged away by accident.
         item.isLocked = true
+        // Metadata is already known (single-page slice): pre-populate the
+        // view cache so the first display never parses in a view body.
+        PDFMetadataCache.storePageCount(1, forItem: item.id, data: slice)
+        PDFMetadataCache.storePageSize(pageSize, forItem: item.id, data: slice, page: 0)
         context.insert(item)
         item.board = board
     }
@@ -221,6 +225,133 @@ enum PDFRenderCache {
         guard let rendered = pdfPageImage(data: data, page: page, pixelSize: pixelSize) else { return nil }
         cache.setObject(rendered, forKey: key)
         return rendered
+    }
+}
+
+/// In-memory PDF metadata (page count + page size) so frequently evaluated
+/// view bodies never re-parse the same document on every selection change.
+///
+/// Keyed by item ID plus a data fingerprint (byte count + leading bytes), so
+/// replacing the PDF bytes while keeping the ID invalidates the entry.
+/// Bounded via `NSCache` (auto-eviction); `invalidate(forItem:)` covers
+/// replacement paths. Cold entries (reopened boards, legacy records with no
+/// stored count) compute once on first use then reuse — invalid data safely
+/// yields 0/nil and shows the placeholder. `NSCache` is thread-safe; a benign
+/// race only repeats one parse (PDFKit itself is still serialized).
+enum PDFMetadataCache {
+    /// Leading bytes compared for fingerprinting. O(1) per lookup.
+    private static let prefixLength = 256
+
+    private static let countCache: NSCache<NSString, CountEntry> = {
+        let c = NSCache<NSString, CountEntry>()
+        c.countLimit = 500
+        return c
+    }()
+    private static let sizeCache: NSCache<NSString, SizeEntry> = {
+        let c = NSCache<NSString, SizeEntry>()
+        c.countLimit = 1000
+        return c
+    }()
+
+    private final class CountEntry: NSObject {
+        let count: Int
+        let length: Int
+        let prefix: Data
+        init(count: Int, length: Int, prefix: Data) {
+            self.count = count
+            self.length = length
+            self.prefix = prefix
+        }
+        func matches(_ data: Data) -> Bool {
+            data.count == length && data.prefix(prefix.count) == prefix
+        }
+    }
+
+    private final class SizeEntry: NSObject {
+        /// `hasSize == false` is a cached negative (unreadable page) so
+        /// corrupt PDFs don't re-parse on every body evaluation. Stored as
+        /// raw components (not `NSValue`) to stay identical on macOS/iOS.
+        let width: CGFloat
+        let height: CGFloat
+        let hasSize: Bool
+        let length: Int
+        let prefix: Data
+        init(size: CGSize?, length: Int, prefix: Data) {
+            if let size {
+                self.width = size.width
+                self.height = size.height
+                self.hasSize = true
+            } else {
+                self.width = 0
+                self.height = 0
+                self.hasSize = false
+            }
+            self.length = length
+            self.prefix = prefix
+        }
+        var size: CGSize? {
+            hasSize ? CGSize(width: width, height: height) : nil
+        }
+        func matches(_ data: Data) -> Bool {
+            data.count == length && data.prefix(prefix.count) == prefix
+        }
+    }
+
+    private static func fingerprint(_ data: Data) -> (length: Int, prefix: Data) {
+        (data.count, data.prefix(prefixLength))
+    }
+
+    private static func countKey(_ id: UUID) -> NSString {
+        id.uuidString as NSString
+    }
+
+    private static func sizeKey(_ id: UUID, page: Int) -> NSString {
+        "\(id.uuidString)-p\(page)" as NSString
+    }
+
+    /// Cached page count (0 for nil/unreadable). Computes once per document.
+    static func pageCount(forItem id: UUID, data: Data?) -> Int {
+        guard let data else { return 0 }
+        let key = countKey(id)
+        if let hit = countCache.object(forKey: key), hit.matches(data) {
+            return hit.count
+        }
+        let count = pdfPageCount(data)
+        let (length, prefix) = fingerprint(data)
+        countCache.setObject(CountEntry(count: count, length: length, prefix: prefix), forKey: key)
+        return count
+    }
+
+    /// Cached media-box size (nil for bad data/out-of-range). Negative results
+    /// are cached too so invalid PDFs never re-parse in view bodies.
+    static func pageSize(forItem id: UUID, data: Data?, page: Int) -> CGSize? {
+        guard let data else { return nil }
+        let key = sizeKey(id, page: page)
+        if let hit = sizeCache.object(forKey: key), hit.matches(data) {
+            return hit.size
+        }
+        let size = pdfPageSize(data, page: page)
+        let (length, prefix) = fingerprint(data)
+        sizeCache.setObject(SizeEntry(size: size, length: length, prefix: prefix), forKey: key)
+        return size
+    }
+
+    /// Pre-populates the cache when the metadata is already known (import),
+    /// so the first display never parses in a view body.
+    static func storePageCount(_ count: Int, forItem id: UUID, data: Data) {
+        let (length, prefix) = fingerprint(data)
+        countCache.setObject(CountEntry(count: count, length: length, prefix: prefix), forKey: countKey(id))
+    }
+
+    static func storePageSize(_ size: CGSize?, forItem id: UUID, data: Data, page: Int) {
+        let (length, prefix) = fingerprint(data)
+        sizeCache.setObject(SizeEntry(size: size, length: length, prefix: prefix), forKey: sizeKey(id, page: page))
+    }
+
+    /// Drops the cached count for `id`. Size entries self-invalidate via
+    /// fingerprint mismatch and expire through the bounded cache.
+    static func invalidate(forItem id: UUID) {
+        countCache.removeObject(forKey: countKey(id))
     }
 }
 

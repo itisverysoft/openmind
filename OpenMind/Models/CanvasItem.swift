@@ -172,13 +172,16 @@ final class CanvasItem {
     // MARK: PDF page
 
     /// Page count of the stored document, or 0 when there is none.
-    var pdfCount: Int { pdfPageCount(pdfData) }
+    /// Cached per item (see `PDFMetadataCache`) so view bodies never re-parse
+    /// on every selection change; cold entries compute once then reuse.
+    var pdfCount: Int { PDFMetadataCache.pageCount(forItem: id, data: pdfData) }
 
     /// Displayed page clamped into range. Never out-of-bounds.
     var clampedPDFPage: Int { clampPDFPage(pdfPage, count: pdfCount) }
 
     /// Media-box size of the displayed page in points, for aspect fitting.
-    var pdfDisplaySize: CGSize? { pdfPageSize(pdfData, page: clampedPDFPage) }
+    /// Cached like `pdfCount`; nil for missing/unreadable pages.
+    var pdfDisplaySize: CGSize? { PDFMetadataCache.pageSize(forItem: id, data: pdfData, page: clampedPDFPage) }
 
     // MARK: Table content
     /// Decoded table, or a default 3x3 when empty/corrupt. Never mutates.
