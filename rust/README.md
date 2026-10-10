@@ -52,6 +52,10 @@ Both repos must sit side by side:
 ## Commands
 
 ```sh
+./scripts/install.sh              # release build + tests + install bins to ~/.local/bin
+./scripts/install.sh --no-test    # skip tests
+./scripts/install.sh --uninstall  # remove installed bins
+
 cd rust
 cargo build            # all crates
 cargo test             # unit + integration tests
