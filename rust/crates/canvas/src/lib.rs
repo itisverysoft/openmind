@@ -17,7 +17,11 @@
 
 pub mod doc;
 pub mod model;
+pub mod spatial;
+pub mod templates;
+pub mod transforms;
 pub mod vsom;
 
 pub use doc::CanvasDoc;
 pub use model::{id, CanvasItem, ItemContent, ItemId, PaintedInk, Rect};
+pub use spatial::SpatialIndex;

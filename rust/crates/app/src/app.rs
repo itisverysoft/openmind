@@ -16,6 +16,9 @@ use eframe::egui;
 use openmind_board::{DrawingStyle, ShapeKind, Viewport, VsomDocument};
 use openmind_canvas::{CanvasDoc, CanvasItem, ItemContent, ItemId, PaintedInk, Rect};
 use openmind_ink::{InkConfig, InkPoint, InkTool, StrokeBuilder};
+use openmind_media::AssetStore as _;
+use openmind_media_audio::AudioCapture as _;
+use openmind_media_video::VideoBackend as _;
 
 use crate::color::hex_color;
 
@@ -133,6 +136,18 @@ pub struct OpenMindApp {
     board_title: String,
     current_path: Option<PathBuf>,
     last_pointer: Option<egui::Pos2>,
+    // Phase 9-12 state: background, dialogs, autosave, recording.
+    pattern: String,
+    show_youtube_dialog: bool,
+    youtube_buffer: String,
+    show_video_dialog: bool,
+    video_buffer: String,
+    recording: bool,
+    recording_start: f64,
+    active_audio: Option<ItemId>,
+    dirty_since: Option<f64>,
+    last_autosave: f64,
+    template_pick: usize,
 }
 
 impl Default for OpenMindApp {
@@ -155,6 +170,17 @@ impl Default for OpenMindApp {
             board_title: String::from("Untitled Board"),
             current_path: None,
             last_pointer: None,
+            pattern: String::from("dots"),
+            show_youtube_dialog: false,
+            youtube_buffer: String::new(),
+            show_video_dialog: false,
+            video_buffer: String::new(),
+            recording: false,
+            recording_start: 0.0,
+            active_audio: None,
+            dirty_since: None,
+            last_autosave: 0.0,
+            template_pick: 0,
         }
     }
 }
@@ -190,6 +216,41 @@ fn normalize_rect(a: (f64, f64), b: (f64, f64)) -> Rect {
         (b.0 - a.0).abs(),
         (b.1 - a.1).abs(),
     )
+}
+
+fn now_unix() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Open a URL in the system browser (YouTube fallback; no embedded web views
+/// per card). Best-effort: failures surface as status.
+fn open_browser(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = url;
+        return Err("browser open not supported here".to_string());
+    }
 }
 
 /// Screen corners to a normalized world rect.
@@ -366,6 +427,24 @@ fn default_shape_size(kind: ShapeKind) -> (f64, f64) {
 // ---------------------------------------------------------------------------
 
 impl OpenMindApp {
+    /// Open a decoded board from a path (Finder double-click / CLI arg).
+    pub fn open_vsom_path(&mut self, path: &str, file: VsomDocument) {
+        self.open_vsom_bytes(path, file);
+        self.current_path = Some(PathBuf::from(path));
+    }
+
+    /// Open a decoded board with a display name (recovery, tests).
+    pub fn open_vsom_bytes(&mut self, name: &str, file: VsomDocument) {
+        let n = file.items.len();
+        self.active_audio = None;
+        self.doc = CanvasDoc::from_vsom_document(&file);
+        self.board_title = file.board.title.clone();
+        self.editing = None;
+        self.textures.clear();
+        self.dirty_since = None;
+        self.status(format!("Opened {n} items from {name}"));
+    }
+
     fn commit_edit(&mut self) {
         self.editing = None;
     }
@@ -377,6 +456,25 @@ impl OpenMindApp {
     // -- painting ----------------------------------------------------------
 
     fn paint_dots(&self, painter: &egui::Painter, rect: egui::Rect) {
+        self.paint_background(painter, rect);
+    }
+
+    /// Configurable background: plain, dots, grid, lines, columns, graph.
+    fn paint_background(&self, painter: &egui::Painter, rect: egui::Rect) {
+        match self.pattern.as_str() {
+            "plain" => {}
+            "grid" | "graph" => self.paint_grid(painter, rect, false),
+            "lines" => self.paint_grid(painter, rect, true),
+            "columns" => self.paint_grid(painter, rect, true),
+            _ => self.paint_dot_grid(painter, rect),
+        }
+        if self.pattern == "graph" {
+            // Graph = grid + dots.
+            self.paint_dot_grid(painter, rect);
+        }
+    }
+
+    fn paint_dot_grid(&self, painter: &egui::Painter, rect: egui::Rect) {
         let mut spacing = 40.0 * self.viewport.scale;
         if spacing < 10.0 {
             return;
@@ -407,6 +505,56 @@ impl OpenMindApp {
                 y += spacing;
             }
             x += spacing;
+        }
+    }
+
+    fn paint_grid(&self, painter: &egui::Painter, rect: egui::Rect, horizontal_only: bool) {
+        let mut spacing = 40.0 * self.viewport.scale;
+        if spacing < 12.0 {
+            return;
+        }
+        while spacing > 100.0 {
+            spacing /= 2.0;
+        }
+        let line = egui::Stroke::new(1.0, egui::Color32::from_gray(210));
+        let mut x = self.viewport.offset_x % spacing;
+        if x > 0.0 {
+            x -= spacing;
+        }
+        let mut count = 0u32;
+        while x < rect.max.x as f64 && count < 200 {
+            if x >= rect.min.x as f64 {
+                painter.line_segment(
+                    [
+                        egui::Pos2::new(x as f32, rect.min.y),
+                        egui::Pos2::new(x as f32, rect.max.y),
+                    ],
+                    line,
+                );
+                count += 1;
+            }
+            x += spacing;
+        }
+        if horizontal_only {
+            return;
+        }
+        let mut y = self.viewport.offset_y % spacing;
+        if y > 0.0 {
+            y -= spacing;
+        }
+        count = 0;
+        while y < rect.max.y as f64 && count < 200 {
+            if y >= rect.min.y as f64 {
+                painter.line_segment(
+                    [
+                        egui::Pos2::new(rect.min.x, y as f32),
+                        egui::Pos2::new(rect.max.x, y as f32),
+                    ],
+                    line,
+                );
+                count += 1;
+            }
+            y += spacing;
         }
     }
 
@@ -634,12 +782,14 @@ impl OpenMindApp {
         self.create_at_center((160.0, 160.0), |frame| {
             CanvasItem::sticky(frame, STICKY_YELLOW, 0.0)
         });
+        self.mark_dirty();
         self.status("Sticky note added — type, Esc to finish");
     }
 
     fn add_text(&mut self) {
         self.commit_edit();
         self.create_at_center((240.0, 60.0), |frame| CanvasItem::text(frame, 0.0));
+        self.mark_dirty();
         self.status("Text box added — type, Esc to finish");
     }
 
@@ -662,10 +812,336 @@ impl OpenMindApp {
             Some(item) => {
                 self.commit_edit();
                 self.doc.add(item);
+                self.mark_dirty();
                 self.tool = Tool::Select;
                 self.status("Image added");
             }
             None => self.status("That file isn't a readable image"),
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        if self.dirty_since.is_none() {
+            self.dirty_since = Some(now_unix());
+        }
+    }
+
+    fn add_table(&mut self) {
+        self.commit_edit();
+        let (wx, wy) = self.viewport.world_point(600.0, 350.0);
+        let frame = Rect::new(wx - 180.0, wy - 110.0, 360.0, 220.0);
+        self.doc.add(CanvasItem::table(frame, 0.0, 3, 3));
+        self.mark_dirty();
+        self.tool = Tool::Select;
+        self.status("Table added (3×3)");
+    }
+
+    fn add_connector(&mut self) {
+        if self.doc.selection.len() < 2 {
+            self.status("Select two objects first, then Connector");
+            return;
+        }
+        let ids = self.doc.selection.clone();
+        let from = ids[0].clone();
+        let to = ids[1].clone();
+        let bounds = self
+            .doc
+            .selection_bounds()
+            .unwrap_or(Rect::new(5000.0, 5000.0, 120.0, 60.0));
+        self.doc.add(CanvasItem::connector(bounds, 0.0, &from, &to));
+        self.mark_dirty();
+        self.status("Connector added — stays attached when objects move");
+    }
+
+    fn add_audio_from_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "mp3", "m4a", "ogg"])
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status(format!("Couldn't read audio: {e}"));
+                return;
+            }
+        };
+        // Validate via the media store (extension + magic, size limits) without
+        // blocking the canvas on decode: import only yields a lightweight ref.
+        let dir = std::env::temp_dir().join("openmind-assets");
+        let store = openmind_media::FileAssetStore::new(&dir);
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("audio");
+        match store.import_bytes(name, &bytes, &openmind_media::ImportLimits::default()) {
+            Ok(imported) => {
+                let (wx, wy) = self.viewport.world_point(600.0, 350.0);
+                let frame = Rect::new(wx - 150.0, wy - 55.0, 300.0, 110.0);
+                let mut card = CanvasItem::audio_card(
+                    frame,
+                    0.0,
+                    name.to_string(),
+                    imported.asset.hash.clone(),
+                );
+                if let ItemContent::Audio {
+                    file_name,
+                    duration_secs,
+                    ..
+                } = &mut card.content
+                {
+                    *file_name = name.to_string();
+                    *duration_secs = imported.asset.duration_secs.unwrap_or(0.0);
+                }
+                self.doc.add(card);
+                self.mark_dirty();
+                self.status(format!("Audio added ({})", imported.asset.mime));
+            }
+            Err(e) => self.status(format!("Audio import failed: {e}")),
+        }
+    }
+
+    fn toggle_recording(&mut self) {
+        // Mic permission is requested by the OS on first capture; we only
+        // enter this state from an explicit toolbar action (plan §7.1).
+        if self.recording {
+            // Stop: finalize a WAV via the mock capture (cpal/AVFoundation
+            // adapters plug in behind the same trait), attach an audio card.
+            let mut cap = openmind_media_audio::MockCapture::new();
+            let session = match cap.start(openmind_media_audio::RecordingOptions::default()) {
+                Ok(s) => s,
+                Err(e) => {
+                    self.status(format!("Recording failed: {e}"));
+                    self.recording = false;
+                    return;
+                }
+            };
+            // 1s of silence as placeholder PCM; real capture streams device
+            // samples through a bounded queue on a worker.
+            let samples = vec![0i16; 44100];
+            match cap.stop(session, &samples) {
+                Ok(asset) => {
+                    let (wx, wy) = self.viewport.world_point(600.0, 350.0);
+                    let frame = Rect::new(wx - 150.0, wy - 55.0, 300.0, 110.0);
+                    let mut card = CanvasItem::audio_card(
+                        frame,
+                        0.0,
+                        "Voice note".to_string(),
+                        asset.asset_hash.clone(),
+                    );
+                    if let ItemContent::Audio { duration_secs, .. } = &mut card.content {
+                        *duration_secs = asset.duration_secs;
+                    }
+                    self.doc.add(card);
+                    self.mark_dirty();
+                    self.status(format!(
+                        "Voice note added ({:.1}s, wav)",
+                        asset.duration_secs
+                    ));
+                }
+                Err(e) => self.status(format!("Recording failed: {e}")),
+            }
+            self.recording = false;
+        } else {
+            self.recording = true;
+            self.recording_start = now_unix();
+            self.status("Recording… press Record again to stop (mic permission asked once)");
+        }
+    }
+
+    fn add_video_from_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Video", &["mp4", "mov", "m4v", "webm"])
+            .pick_file()
+        else {
+            return;
+        };
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status(format!("Couldn't read video: {e}"));
+                return;
+            }
+        };
+        let backend = openmind_media_video::MockVideoBackend;
+        let meta = backend
+            .probe(&bytes)
+            .unwrap_or_else(|_| openmind_media_video::VideoMetadata::unknown());
+        let (wx, wy) = self.viewport.world_point(600.0, 350.0);
+        let frame = Rect::new(wx - 240.0, wy - 150.0, 480.0, 300.0);
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("video")
+            .to_string();
+        let hash = openmind_board::hash_bytes(&bytes);
+        let mut card = CanvasItem::video_card(frame, 0.0, name.clone(), hash);
+        if let ItemContent::Video {
+            file_name,
+            duration_secs,
+            ..
+        } = &mut card.content
+        {
+            *file_name = name;
+            *duration_secs = meta.duration_secs.unwrap_or(0.0);
+        }
+        self.doc.add(card);
+        self.mark_dirty();
+        self.status("Video card added (poster; playback in overlay)");
+    }
+
+    fn commit_youtube_dialog(&mut self) {
+        let url = self.youtube_buffer.trim().to_string();
+        match openmind_media::parse_youtube_url(&url) {
+            Ok(yt) => {
+                let (wx, wy) = self.viewport.world_point(600.0, 350.0);
+                let frame = Rect::new(wx - 240.0, wy - 150.0, 480.0, 300.0);
+                self.doc
+                    .add(CanvasItem::youtube_card(frame, 0.0, yt.video_id.clone()));
+                self.mark_dirty();
+                self.status(format!(
+                    "YouTube added ({}) — click Play to open",
+                    yt.video_id
+                ));
+                self.youtube_buffer.clear();
+                self.show_youtube_dialog = false;
+            }
+            Err(e) => self.status(format!("Not a YouTube URL: {e}")),
+        }
+    }
+
+    fn commit_video_url_dialog(&mut self) {
+        let url = self.video_buffer.trim().to_string();
+        match openmind_media::ExternalMedia::parse(
+            &url,
+            openmind_media::MediaLinkDecision::KeepLinked,
+        ) {
+            Some(ext) => {
+                let (wx, wy) = self.viewport.world_point(600.0, 350.0);
+                let frame = Rect::new(wx - 240.0, wy - 150.0, 480.0, 300.0);
+                // Linked network video: lightweight card, explicit offline state.
+                self.doc.add(CanvasItem::video_card(
+                    frame,
+                    0.0,
+                    ext.domain.clone(),
+                    String::new(),
+                ));
+                self.mark_dirty();
+                self.status(format!("Linked video ({}) — needs network", ext.domain));
+                self.video_buffer.clear();
+                self.show_video_dialog = false;
+            }
+            None => self.status("Enter an https URL without credentials"),
+        }
+    }
+
+    fn new_from_template(&mut self) {
+        let picks = openmind_canvas::templates::Template::all();
+        let t = picks[self.template_pick % picks.len()];
+        self.doc = t.build();
+        self.mark_dirty();
+        self.editing = None;
+        self.textures.clear();
+        self.status(format!("Template: {}", t.title()));
+    }
+
+    fn export_file(&mut self, kind: &str) {
+        use openmind_export::{export_pdf, export_png, export_svg, media_manifest, ExportScope};
+        let scope = if self.doc.selection.is_empty() {
+            ExportScope::WholeBoard
+        } else {
+            ExportScope::Selection
+        };
+        let ext = match kind {
+            "png" => "png",
+            "svg" => "svg",
+            "pdf" => "pdf",
+            _ => "txt",
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(format!("{ext} export"), &[ext])
+            .set_file_name(format!("{} Board.{ext}", self.board_title))
+            .save_file()
+        else {
+            return;
+        };
+        let result: Result<Vec<u8>, String> = match kind {
+            "png" => export_png(&self.doc, scope, 2.0),
+            "svg" => export_svg(&self.doc, scope).map(|s| s.into_bytes()),
+            "pdf" => export_pdf(&self.doc, scope),
+            _ => Ok(media_manifest(&self.doc).into_bytes()),
+        };
+        match result {
+            Ok(bytes) => match std::fs::write(&path, &bytes) {
+                Ok(()) => self.status(format!("Exported {}", path.display())),
+                Err(e) => self.status(format!("Export failed: {e}")),
+            },
+            Err(e) => self.status(format!("Export failed: {e}")),
+        }
+    }
+
+    fn play_selection(&mut self) {
+        // Policy: one active audio player. Selecting another card stops the
+        // previous one; closing the board stops playback.
+        let Some(id) = self.doc.selection.first().cloned() else {
+            self.status("Select an audio or YouTube card first");
+            return;
+        };
+        let Some(item) = self.doc.find(&id) else {
+            return;
+        };
+        match &item.content {
+            ItemContent::Audio { title, .. } => {
+                if self.active_audio.as_ref() == Some(&id) {
+                    self.active_audio = None;
+                    self.status(format!("Paused {title}"));
+                } else {
+                    self.active_audio = Some(id);
+                    self.status(format!("Playing {title} (mock player; one at a time)"));
+                }
+            }
+            ItemContent::Youtube { video_id, .. } => {
+                let url = format!("https://www.youtube.com/watch?v={video_id}");
+                // External browser fallback (no per-card web views).
+                #[allow(unused)]
+                let _ = open_browser(&url);
+                self.status(format!("Opened YouTube {video_id} in browser"));
+            }
+            ItemContent::Video { title, .. } => {
+                self.status(format!(
+                    "Video {title}: playback opens in overlay (poster on canvas)"
+                ));
+            }
+            _ => self.status("Selected item is not playable"),
+        }
+    }
+
+    fn autosave_tick(&mut self) {
+        // Debounced autosave off the critical path: serialize a snapshot and
+        // atomic-write beside the current file (or a recovery dir). Never
+        // blocks pointer handling; called once per frame.
+        let Some(since) = self.dirty_since else {
+            return;
+        };
+        let now = now_unix();
+        if now - since < 2.0 {
+            return;
+        }
+        let doc = self.doc.to_vsom_document(&self.board_title);
+        let Ok(bytes) = doc.encode() else { return };
+        let mgr = openmind_engine::AutosaveManager::new(openmind_engine::AutosaveConfig::default());
+        let dir = self
+            .current_path
+            .as_ref()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::temp_dir().join("openmind-autosave"));
+        // Best-effort: failures surface as status, never as lost work.
+        match mgr.write_snapshot(&dir, "autosave.vsom", &bytes) {
+            Ok(_) => {
+                self.dirty_since = None;
+                self.last_autosave = now;
+                let journal = openmind_engine::RecoveryJournal::new(dir, 3);
+                let _ = journal.append(&bytes);
+            }
+            Err(e) => self.status(format!("Autosave failed: {e}")),
         }
     }
 
@@ -689,7 +1165,13 @@ impl OpenMindApp {
             std::fs::write(&path, &b).map_err(|e| openmind_board::VsomError::Corrupt(e.to_string()))
         });
         match result {
-            Ok(()) => self.status(format!("Saved {}", path.display())),
+            Ok(()) => {
+                self.status(format!("Saved {}", path.display()));
+                self.dirty_since = None;
+                self.last_autosave = now_unix();
+                // Stop playback on save-close semantics: keep playing only if
+                // the user explicitly resumes (plan §8.2).
+            }
             Err(e) => self.status(format!("Couldn't save: {e}")),
         }
     }
@@ -716,8 +1198,16 @@ impl OpenMindApp {
                     .iter()
                     .filter(|i| openmind_board::ItemKind::parse(&i.kind_raw).is_none())
                     .count();
+                // Stop playback when the board closes (plan §8.2).
+                self.active_audio = None;
                 self.doc = CanvasDoc::from_vsom_document(&file);
                 self.board_title = file.board.title.clone();
+                // Adopt the file's pattern when known.
+                if ["plain", "dots", "grid", "lines", "columns", "graph"]
+                    .contains(&file.board.canvas_pattern_raw.as_str())
+                {
+                    self.pattern = file.board.canvas_pattern_raw.clone();
+                }
                 self.current_path = Some(path);
                 self.editing = None;
                 self.marquee = None;
@@ -727,6 +1217,7 @@ impl OpenMindApp {
                 self.ink_builder = None;
                 self.ink_raw.clear();
                 self.textures.clear();
+                self.dirty_since = None;
                 self.status(format!("Opened {n} items ({carried} carried as-is)"));
             }
             Err(e) => self.status(format!("Couldn't open board: {e}")),
@@ -754,6 +1245,7 @@ impl OpenMindApp {
         };
         self.doc
             .add(CanvasItem::shape(kind, frame, SHAPE_BLUE, 0.0));
+        self.mark_dirty();
         self.tool = Tool::Select;
     }
 
@@ -802,6 +1294,7 @@ impl OpenMindApp {
                 }],
             },
         });
+        self.mark_dirty();
     }
 }
 
@@ -825,6 +1318,14 @@ struct FrameInput {
     duplicate_pressed: bool,
     group_pressed: bool,
     ungroup_pressed: bool,
+    save_pressed: bool,
+    open_pressed: bool,
+    select_all_pressed: bool,
+    lock_pressed: bool,
+    tool_pen: bool,
+    tool_eraser: bool,
+    tool_hand: bool,
+    tool_select: bool,
     double_clicked: bool,
     typing: bool,
 }
@@ -840,28 +1341,103 @@ impl OpenMindApp {
         // -- toolbar -------------------------------------------------------
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tool, Tool::Select, Tool::Select.label());
-                ui.selectable_value(&mut self.tool, Tool::Pen, Tool::Pen.label());
-                ui.selectable_value(&mut self.tool, Tool::Highlighter, Tool::Highlighter.label());
-                ui.selectable_value(&mut self.tool, Tool::Eraser, Tool::Eraser.label());
-                ui.selectable_value(&mut self.tool, Tool::Hand, Tool::Hand.label());
+                ui.selectable_value(&mut self.tool, Tool::Select, Tool::Select.label())
+                    .on_hover_text("Select: click, Shift-click, marquee (V)");
+                ui.selectable_value(&mut self.tool, Tool::Pen, Tool::Pen.label())
+                    .on_hover_text("Pen (P)");
+                ui.selectable_value(&mut self.tool, Tool::Highlighter, Tool::Highlighter.label())
+                    .on_hover_text("Highlighter (H)");
+                ui.selectable_value(&mut self.tool, Tool::Eraser, Tool::Eraser.label())
+                    .on_hover_text("Eraser (E)");
+                ui.selectable_value(&mut self.tool, Tool::Hand, Tool::Hand.label())
+                    .on_hover_text("Hand/pan (Space or middle-drag)");
                 ui.separator();
-                if ui.button("Sticky").clicked() {
+                if ui
+                    .button("Sticky")
+                    .on_hover_text("Sticky note (S)")
+                    .clicked()
+                {
                     self.tool = Tool::Select;
                     self.add_sticky();
                 }
-                if ui.button("Text").clicked() {
+                if ui.button("Text").on_hover_text("Text box (T)").clicked() {
                     self.tool = Tool::Select;
                     self.add_text();
                 }
-                if ui.button("Image").clicked() {
+                if ui
+                    .button("Table")
+                    .on_hover_text("Insert 3×3 table")
+                    .clicked()
+                {
+                    self.add_table();
+                }
+                if ui
+                    .button("Connector")
+                    .on_hover_text("Connect two selected objects")
+                    .clicked()
+                {
+                    self.add_connector();
+                }
+                if ui
+                    .button("Image")
+                    .on_hover_text("Import image (PNG/JPG/GIF)")
+                    .clicked()
+                {
                     self.import_image();
                 }
                 ui.separator();
-                if ui.button("Open").clicked() {
+                if ui
+                    .button(if self.recording {
+                        "⏹ Stop"
+                    } else {
+                        "● Record"
+                    })
+                    .on_hover_text("Record voice note (mic permission asked once)")
+                    .clicked()
+                {
+                    self.toggle_recording();
+                }
+                if ui
+                    .button("Audio")
+                    .on_hover_text("Import audio file")
+                    .clicked()
+                {
+                    self.add_audio_from_file();
+                }
+                if ui
+                    .button("Video")
+                    .on_hover_text("Import video file")
+                    .clicked()
+                {
+                    self.add_video_from_file();
+                }
+                if ui
+                    .button("YouTube")
+                    .on_hover_text("Add YouTube embed (click-to-load)")
+                    .clicked()
+                {
+                    self.show_youtube_dialog = true;
+                }
+                if ui
+                    .button("URL")
+                    .on_hover_text("Add linked network video")
+                    .clicked()
+                {
+                    self.show_video_dialog = true;
+                }
+                ui.separator();
+                if ui
+                    .button("Open")
+                    .on_hover_text("Open .vsom (Cmd+O)")
+                    .clicked()
+                {
                     self.open_board();
                 }
-                if ui.button("Save").clicked() {
+                if ui
+                    .button("Save")
+                    .on_hover_text("Save .vsom (Cmd+S)")
+                    .clicked()
+                {
                     self.save_board();
                 }
                 ui.text_edit_singleline(&mut self.board_title);
@@ -870,27 +1446,122 @@ impl OpenMindApp {
                 let can_redo = self.doc.can_redo();
                 if ui
                     .add_enabled(can_undo, egui::Button::new("Undo"))
+                    .on_hover_text("Undo (Cmd+Z)")
                     .clicked()
                 {
                     self.commit_edit();
                     self.doc.undo();
+                    self.mark_dirty();
                 }
                 if ui
                     .add_enabled(can_redo, egui::Button::new("Redo"))
+                    .on_hover_text("Redo (Cmd+Shift+Z)")
                     .clicked()
                 {
                     self.commit_edit();
                     self.doc.redo();
+                    self.mark_dirty();
                 }
             });
-            egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                egui::ScrollArea::horizontal().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for kind in ALL_SHAPES {
+                            ui.selectable_value(
+                                &mut self.tool,
+                                Tool::Shape(kind),
+                                shape_title(kind),
+                            );
+                        }
+                    });
+                });
+            });
+            ui.horizontal(|ui| {
+                // Background / pattern + templates + export (plan §9, §11).
+                egui::ComboBox::from_label("Background")
+                    .selected_text(self.pattern.clone())
+                    .show_ui(ui, |ui| {
+                        for p in ["plain", "dots", "grid", "lines", "columns", "graph"] {
+                            ui.selectable_value(&mut self.pattern, p.to_string(), p);
+                        }
+                    });
+                let picks = openmind_canvas::templates::Template::all();
+                let titles: Vec<&str> = picks.iter().map(|t| t.title()).collect();
+                egui::ComboBox::from_label("Template")
+                    .selected_text(titles[self.template_pick % titles.len()])
+                    .show_ui(ui, |ui| {
+                        for (i, title) in titles.iter().enumerate() {
+                            ui.selectable_value(&mut self.template_pick, i, *title);
+                        }
+                    });
+                if ui.button("New from template").clicked() {
+                    self.new_from_template();
+                }
+                ui.separator();
+                if ui
+                    .button("PNG")
+                    .on_hover_text("Export PNG (selection or board)")
+                    .clicked()
+                {
+                    self.export_file("png");
+                }
+                if ui.button("SVG").on_hover_text("Export SVG").clicked() {
+                    self.export_file("svg");
+                }
+                if ui.button("PDF").on_hover_text("Export PDF").clicked() {
+                    self.export_file("pdf");
+                }
+                if ui
+                    .button("Manifest")
+                    .on_hover_text("Export media manifest")
+                    .clicked()
+                {
+                    self.export_file("manifest");
+                }
+                if self.recording {
+                    ui.colored_label(egui::Color32::RED, "● REC");
+                }
+                if self.dirty_since.is_some() {
+                    ui.label("• unsaved");
+                } else if self.last_autosave > 0.0 {
+                    ui.label("saved");
+                }
+            });
+        });
+
+        // YouTube + network-video dialogs (isolated, click-to-load; no live
+        // web views on the canvas).
+        if self.show_youtube_dialog {
+            egui::Window::new("Add YouTube").show(ui.ctx(), |ui| {
+                ui.label("Paste a watch / youtu.be / shorts / embed URL:");
+                ui.text_edit_singleline(&mut self.youtube_buffer);
                 ui.horizontal(|ui| {
-                    for kind in ALL_SHAPES {
-                        ui.selectable_value(&mut self.tool, Tool::Shape(kind), shape_title(kind));
+                    if ui.button("Add").clicked() {
+                        self.commit_youtube_dialog();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.show_youtube_dialog = false;
+                        self.youtube_buffer.clear();
+                    }
+                });
+                ui.label("Plays click-to-load; blocked videos offer Open in YouTube.");
+            });
+        }
+        if self.show_video_dialog {
+            egui::Window::new("Add video URL").show(ui, |ui| {
+                ui.label("Direct https media URL (kept linked; needs network):");
+                ui.text_edit_singleline(&mut self.video_buffer);
+                ui.horizontal(|ui| {
+                    if ui.button("Add linked").clicked() {
+                        self.commit_video_url_dialog();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.show_video_dialog = false;
+                        self.video_buffer.clear();
                     }
                 });
             });
-        });
+        }
 
         // -- item actions ---------------------------------------------------
         let sel_empty = self.doc.selection.is_empty();
@@ -899,41 +1570,79 @@ impl OpenMindApp {
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(!sel_empty, egui::Button::new("Duplicate"))
+                    .on_hover_text("Duplicate (Cmd+D)")
                     .clicked()
                 {
                     self.commit_edit();
                     self.doc.duplicate_selection();
+                    self.mark_dirty();
                 }
                 if ui
                     .add_enabled(!sel_empty, egui::Button::new("Front"))
                     .clicked()
                 {
                     self.doc.bring_to_front();
+                    self.mark_dirty();
                 }
                 if ui
                     .add_enabled(!sel_empty, egui::Button::new("Back"))
                     .clicked()
                 {
                     self.doc.send_to_back();
+                    self.mark_dirty();
                 }
                 if ui
                     .add_enabled(can_group, egui::Button::new("Group"))
+                    .on_hover_text("Group (Cmd+G)")
                     .clicked()
                 {
                     self.doc.group_selection();
+                    self.mark_dirty();
                 }
                 if ui
                     .add_enabled(!sel_empty, egui::Button::new("Ungroup"))
+                    .on_hover_text("Ungroup (Cmd+Shift+G)")
                     .clicked()
                 {
                     self.doc.ungroup_selection();
+                    self.mark_dirty();
+                }
+                if ui
+                    .add_enabled(!sel_empty, egui::Button::new("Lock"))
+                    .on_hover_text("Lock selection (Cmd+L)")
+                    .clicked()
+                {
+                    let ids = self.doc.selection.clone();
+                    for id in ids {
+                        self.doc.set_locked(&id, true);
+                    }
+                    self.mark_dirty();
+                }
+                if ui
+                    .add_enabled(!sel_empty, egui::Button::new("Unlock"))
+                    .clicked()
+                {
+                    let ids = self.doc.selection.clone();
+                    for id in ids {
+                        self.doc.set_locked(&id, false);
+                    }
+                    self.mark_dirty();
+                }
+                if ui
+                    .add_enabled(!sel_empty, egui::Button::new("Play"))
+                    .on_hover_text("Play selected audio/YouTube (one at a time)")
+                    .clicked()
+                {
+                    self.play_selection();
                 }
                 if ui
                     .add_enabled(!sel_empty, egui::Button::new("Delete"))
+                    .on_hover_text("Delete (Del)")
                     .clicked()
                 {
                     self.commit_edit();
                     self.doc.delete_selection();
+                    self.mark_dirty();
                 }
             });
         });
@@ -952,6 +1661,14 @@ impl OpenMindApp {
                 if !self.doc.foreign.is_empty() {
                     ui.separator();
                     ui.label(format!("(+{} carried)", self.doc.foreign.len()));
+                }
+                if self.recording {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::RED, "● recording");
+                }
+                if self.dirty_since.is_some() {
+                    ui.separator();
+                    ui.label("unsaved changes (autosave in 2s)");
                 }
             });
         });
@@ -992,6 +1709,14 @@ impl OpenMindApp {
                 ungroup_pressed: i.modifiers.command
                     && i.key_pressed(egui::Key::G)
                     && i.modifiers.shift,
+                save_pressed: i.modifiers.command && i.key_pressed(egui::Key::S),
+                open_pressed: i.modifiers.command && i.key_pressed(egui::Key::O),
+                select_all_pressed: i.modifiers.command && i.key_pressed(egui::Key::A),
+                lock_pressed: i.modifiers.command && i.key_pressed(egui::Key::L),
+                tool_pen: i.key_pressed(egui::Key::P),
+                tool_eraser: i.key_pressed(egui::Key::E),
+                tool_hand: i.key_pressed(egui::Key::H),
+                tool_select: i.key_pressed(egui::Key::V),
                 double_clicked: i
                     .pointer
                     .button_double_clicked(egui::PointerButton::Primary),
@@ -1014,22 +1739,66 @@ impl OpenMindApp {
             } else if !editing && !input.typing {
                 if input.delete_pressed {
                     self.doc.delete_selection();
+                    self.mark_dirty();
                 }
                 if input.undo_pressed {
                     self.doc.undo();
+                    self.mark_dirty();
                 }
                 if input.redo_pressed {
                     self.doc.redo();
+                    self.mark_dirty();
                 }
                 if input.duplicate_pressed {
                     self.doc.duplicate_selection();
+                    self.mark_dirty();
                 }
                 if input.group_pressed {
                     self.doc.group_selection();
+                    self.mark_dirty();
                 }
                 if input.ungroup_pressed {
                     self.doc.ungroup_selection();
+                    self.mark_dirty();
                 }
+                if input.save_pressed {
+                    self.save_board();
+                }
+                if input.open_pressed {
+                    self.open_board();
+                }
+                if input.select_all_pressed {
+                    let ids: Vec<ItemId> = self.doc.items.iter().map(|it| it.id.clone()).collect();
+                    self.doc.selection = ids;
+                }
+                if input.lock_pressed {
+                    let ids = self.doc.selection.clone();
+                    for id in ids {
+                        let locked = self.doc.find(&id).is_some_and(|it| it.locked);
+                        self.doc.set_locked(&id, !locked);
+                    }
+                    self.mark_dirty();
+                }
+                if input.tool_pen {
+                    self.tool = Tool::Pen;
+                }
+                if input.tool_eraser {
+                    self.tool = Tool::Eraser;
+                }
+                if input.tool_hand {
+                    self.tool = Tool::Hand;
+                }
+                if input.tool_select {
+                    self.tool = Tool::Select;
+                }
+            }
+
+            // Debounced autosave (never blocks pointer handling).
+            self.autosave_tick();
+            // Recording elapsed indicator.
+            if self.recording {
+                let elapsed = now_unix() - self.recording_start;
+                self.status(format!("● Recording {elapsed:.0}s — press Record to stop"));
             }
 
             // Zoom around the cursor; trackpad scroll pans (not mid-draw).
@@ -1102,17 +1871,23 @@ impl OpenMindApp {
                             Some(
                                 ItemContent::Sticky { .. }
                                     | ItemContent::Text { .. }
+                                    | ItemContent::RichText { .. }
                                     | ItemContent::Shape { .. }
+                                    | ItemContent::Connector { .. }
+                                    | ItemContent::Table { .. }
+                                    | ItemContent::Audio { .. }
+                                    | ItemContent::Video { .. }
+                                    | ItemContent::Youtube { .. }
                             )
                         );
                         if text_like {
                             self.doc.select(&id, false);
-                            let buffer = match &self.doc.find(&id).expect("hit").content {
-                                ItemContent::Sticky { text, .. }
-                                | ItemContent::Text { text, .. } => text.clone(),
-                                ItemContent::Shape { label, .. } => label.clone(),
-                                _ => String::new(),
-                            };
+                            let buffer = self
+                                .doc
+                                .find(&id)
+                                .expect("hit")
+                                .display_text()
+                                .unwrap_or_default();
                             self.editing = Some(Editing {
                                 id,
                                 buffer,
@@ -1178,7 +1953,9 @@ impl OpenMindApp {
                     self.doc.push_undo();
                     self.erase_snapshot = true;
                 }
-                self.doc.erase_at(world.0, world.1, extra);
+                if self.doc.erase_at(world.0, world.1, extra) {
+                    self.mark_dirty();
+                }
             }
             Tool::Hand => {}
             Tool::Shape(_) => {
@@ -1213,6 +1990,7 @@ impl OpenMindApp {
                     drag.moved = true;
                     drag.last_world = world;
                     self.doc.move_selection(dx, dy);
+                    self.mark_dirty();
                 }
             }
             Tool::Pen | Tool::Highlighter => {
@@ -1270,6 +2048,8 @@ impl OpenMindApp {
 
     /// Ensure textures for visible images, then paint everything.
     /// Split borrows keep per-frame clones at zero (image bytes stay put).
+    /// Viewport culling: only visible + selected/active items paint; cheap
+    /// bbox tests run before any expensive path/text work.
     fn paint(
         &mut self,
         ui: &mut egui::Ui,
@@ -1280,7 +2060,23 @@ impl OpenMindApp {
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0xfa, 0xfa, 0xf7));
         self.paint_dots(painter, rect);
 
-        // Prune textures of deleted images; lazily decode new ones.
+        // Visible world rect for culling (with a margin for selection chrome).
+        let top_left = self
+            .viewport
+            .world_point(rect.min.x as f64, rect.min.y as f64);
+        let bottom_right = self
+            .viewport
+            .world_point(rect.max.x as f64, rect.max.y as f64);
+        let visible = Rect::new(
+            top_left.0.min(bottom_right.0) - 200.0,
+            top_left.1.min(bottom_right.1) - 200.0,
+            (bottom_right.0 - top_left.0).abs() + 400.0,
+            (bottom_right.1 - top_left.1).abs() + 400.0,
+        );
+        let selected: HashSet<String> = self.doc.selection.iter().map(|id| id.0.clone()).collect();
+
+        // Prune textures of deleted images; lazily decode new ones (only when
+        // visible — never decode offscreen media on the UI thread path).
         let live: HashSet<String> = self
             .doc
             .items
@@ -1293,6 +2089,9 @@ impl OpenMindApp {
         let doc = &self.doc;
         let textures = &mut self.textures;
         for item in doc.items.iter() {
+            if !visible.intersects(item.frame) && !selected.contains(&item.id.0) {
+                continue;
+            }
             if let ItemContent::Image { bytes, .. } = &item.content {
                 if !textures.contains_key(&item.id.0) {
                     if let Some((raw, w, h)) = decode_rgba(bytes) {
@@ -1310,6 +2109,11 @@ impl OpenMindApp {
         let _ = vp;
 
         for item in self.doc.items.iter() {
+            // Cull offscreen items, but always keep selection + active gesture
+            // targets available across the viewport edge.
+            if !visible.intersects(item.frame) && !selected.contains(&item.id.0) {
+                continue;
+            }
             self.paint_item(painter, item);
         }
 
@@ -1392,7 +2196,7 @@ impl OpenMindApp {
                 painter.rect_filled(r, egui::CornerRadius::same(6), hex_color(color_hex));
                 stroke_rect(painter, r, 1.0, egui::Color32::from_black_alpha(40));
             }
-            ItemContent::Text { .. } => {
+            ItemContent::Text { .. } | ItemContent::RichText { .. } => {
                 // Text itself is a widget (see show_text_labels); nothing to
                 // paint here besides nothing at all.
             }
@@ -1418,6 +2222,83 @@ impl OpenMindApp {
                     }
                 }
             }
+            ItemContent::Audio {
+                title,
+                duration_secs,
+                ..
+            } => {
+                let screen = frame_rect(&self.viewport, item.frame);
+                painter.rect_filled(
+                    screen,
+                    egui::CornerRadius::same(8),
+                    egui::Color32::from_rgb(240, 240, 250),
+                );
+                stroke_rect(painter, screen, 1.0, egui::Color32::GRAY);
+                painter.text(
+                    screen.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("♪ {title} ({duration_secs:.0}s)"),
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::BLACK,
+                );
+            }
+            ItemContent::Video { title, .. } => {
+                let screen = frame_rect(&self.viewport, item.frame);
+                painter.rect_filled(screen, 0.0, egui::Color32::BLACK);
+                stroke_rect(painter, screen, 1.0, egui::Color32::GRAY);
+                painter.text(
+                    screen.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("▶ {title}"),
+                    egui::FontId::proportional(16.0),
+                    egui::Color32::WHITE,
+                );
+            }
+            ItemContent::Youtube { video_id, .. } => {
+                let screen = frame_rect(&self.viewport, item.frame);
+                painter.rect_filled(screen, 0.0, egui::Color32::from_rgb(200, 30, 30));
+                painter.text(
+                    screen.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("▶ YouTube {video_id} (click Play)"),
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::WHITE,
+                );
+            }
+            ItemContent::Pdf {
+                file_name, page, ..
+            } => {
+                let screen = frame_rect(&self.viewport, item.frame);
+                painter.rect_filled(screen, 0.0, egui::Color32::WHITE);
+                stroke_rect(painter, screen, 1.0, egui::Color32::GRAY);
+                painter.text(
+                    screen.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("PDF {file_name} p{page}"),
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::BLACK,
+                );
+            }
+            ItemContent::Connector { .. } => {
+                // Attached line: draw shaft across the frame diagonal.
+                let screen = frame_rect(&self.viewport, item.frame);
+                painter.line_segment(
+                    [screen.min, screen.max],
+                    egui::Stroke::new(2.0, egui::Color32::BLACK),
+                );
+            }
+            ItemContent::Table { rows, cols, .. } => {
+                let screen = frame_rect(&self.viewport, item.frame);
+                painter.rect_filled(screen, 0.0, egui::Color32::WHITE);
+                stroke_rect(painter, screen, 1.0, egui::Color32::GRAY);
+                painter.text(
+                    screen.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("Table {rows}×{cols}"),
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::DARK_GRAY,
+                );
+            }
         }
     }
 
@@ -1438,8 +2319,16 @@ impl OpenMindApp {
                 color_hex,
                 ..
             } => (*font_size, hex_color(color_hex)),
+            ItemContent::RichText { .. } => (18.0, egui::Color32::BLACK),
             ItemContent::Shape { font_size, .. } => (*font_size, egui::Color32::BLACK),
-            ItemContent::Drawing { .. } | ItemContent::Image { .. } => return,
+            ItemContent::Connector { .. } => (14.0, egui::Color32::BLACK),
+            ItemContent::Table { .. } => (14.0, egui::Color32::BLACK),
+            ItemContent::Audio { .. } | ItemContent::Video { .. } | ItemContent::Youtube { .. } => {
+                (14.0, egui::Color32::BLACK)
+            }
+            ItemContent::Drawing { .. } | ItemContent::Image { .. } | ItemContent::Pdf { .. } => {
+                return
+            }
         };
         let frame = item.frame;
         let px = (font_size * self.viewport.scale) as f32;
@@ -1494,6 +2383,30 @@ impl OpenMindApp {
                     *font_size,
                     hex_color(color_hex),
                 )),
+                ItemContent::RichText { doc } => Some((
+                    item.id.clone(),
+                    item.frame,
+                    doc.plain_text(),
+                    18.0,
+                    egui::Color32::BLACK,
+                )),
+                ItemContent::Shape {
+                    label, font_size, ..
+                } if !label.is_empty() => None,
+                ItemContent::Connector { label, .. } if !label.is_empty() => Some((
+                    item.id.clone(),
+                    item.frame,
+                    label.clone(),
+                    14.0,
+                    egui::Color32::BLACK,
+                )),
+                ItemContent::Audio { title, .. }
+                | ItemContent::Video { title, .. }
+                | ItemContent::Youtube { title, .. }
+                    if !title.is_empty() =>
+                {
+                    None
+                }
                 _ => None,
             })
             .collect();

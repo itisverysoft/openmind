@@ -5,7 +5,7 @@ build/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 # Local dev-step guides stay private; the root README is published.
-instructions/*.md
+# instructions/*.md
 # Agent scratch space (worktrees, local state).
 .kilo/
 .kilo

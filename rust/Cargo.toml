@@ -13,9 +13,16 @@ rust-version = "1.85"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+sha2 = "0.10"
 openmind-board = { path = "crates/board" }
 openmind-ink = { path = "crates/ink" }
 openmind-canvas = { path = "crates/canvas" }
+openmind-text = { path = "crates/text" }
+openmind-media = { path = "crates/media" }
+openmind-media-audio = { path = "crates/media-audio" }
+openmind-media-video = { path = "crates/media-video" }
+openmind-engine = { path = "crates/engine" }
+openmind-export = { path = "crates/export" }
 egui = "=0.36.2"
 eframe = "=0.36.2"
 rfd = "=0.17.2"

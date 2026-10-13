@@ -152,6 +152,12 @@ fn native_record(item: &CanvasItem) -> Vec<BoardItem> {
             base.font_size = *font_size;
             vec![base]
         }
+        ItemContent::RichText { doc } => {
+            base.kind_raw = "text".to_string();
+            base.text = doc.plain_text();
+            base.rich_text_data = doc.encode();
+            vec![base]
+        }
         // One record per stroke: Swift drawing items hold a single stroke.
         ItemContent::Drawing { strokes } => {
             strokes.iter().map(|s| stroke_record(s, item)).collect()
@@ -159,6 +165,57 @@ fn native_record(item: &CanvasItem) -> Vec<BoardItem> {
         ItemContent::Image { bytes, .. } => {
             base.image_data = Some(bytes.clone());
             base.font_size = 18.0;
+            vec![base]
+        }
+        ItemContent::Audio {
+            title,
+            file_name,
+            duration_secs,
+            ..
+        } => {
+            base.kind_raw = "audio".to_string();
+            base.text = title.clone();
+            base.audio_file_name = file_name.clone();
+            base.audio_duration = *duration_secs;
+            vec![base]
+        }
+        ItemContent::Video {
+            title,
+            file_name,
+            duration_secs,
+            ..
+        } => {
+            base.kind_raw = "video".to_string();
+            base.text = title.clone();
+            base.video_file_name = file_name.clone();
+            base.video_duration = *duration_secs;
+            vec![base]
+        }
+        ItemContent::Youtube { video_id, title } => {
+            base.kind_raw = "youtube".to_string();
+            base.text = title.clone();
+            base.youtube_url = format!("https://www.youtube.com/watch?v={video_id}");
+            vec![base]
+        }
+        ItemContent::Pdf {
+            file_name, page, ..
+        } => {
+            base.kind_raw = "pdf".to_string();
+            base.text = file_name.clone();
+            base.pdf_page = *page;
+            vec![base]
+        }
+        ItemContent::Connector { label, .. } => {
+            // Connectors ride as line-like shapes; endpoints reattach on move
+            // via the canvas model (ids stored in content, not in .vsom).
+            base.kind_raw = "shape".to_string();
+            base.shape_raw = "arrow".to_string();
+            base.text = label.clone();
+            vec![base]
+        }
+        ItemContent::Table { cells, .. } => {
+            base.kind_raw = "table".to_string();
+            base.table_data = serde_json::to_vec(cells).unwrap_or_default();
             vec![base]
         }
     }

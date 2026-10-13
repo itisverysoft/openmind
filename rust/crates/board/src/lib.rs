@@ -17,13 +17,25 @@
 
 #![forbid(unsafe_code)]
 
+pub mod asset;
+pub mod id;
+pub mod manifest;
+pub mod migrate;
 pub mod model;
+pub mod package;
 pub mod settings;
+pub mod stable;
 pub mod time;
+pub mod validate;
 pub mod vsom;
-mod wire;
+pub mod wire;
 
+pub use asset::{hash_bytes, kind_for, sniff_mime, AssetKind, AssetRef};
+pub use id::{BoardId, ObjectId};
+pub use manifest::{AppMetadata, BoardManifest, PACKAGE_SCHEMA_VERSION, VSOM_SCHEMA_VERSION};
 pub use model::{Board, CanvasItem, DrawingStyle, ItemKind, ShapeKind};
 pub use settings::{CanvasMetrics, CanvasOrientation, CanvasPattern, CanvasSizePreset, Viewport};
+pub use stable::{Background, BoardObject, BoardObjectKind, StableBoard, Transform, ViewportState};
 pub use time::{swift_now, swift_to_unix, unix_to_swift};
+pub use validate::{validate_asset_path, validate_board, Limits, ValidationError};
 pub use vsom::{VsomDocument, VsomError, VSOM_FORMAT_ID, VSOM_VERSION};

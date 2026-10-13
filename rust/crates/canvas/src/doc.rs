@@ -356,8 +356,21 @@ impl CanvasDoc {
                 crate::model::ItemContent::Sticky { text: t, .. }
                 | crate::model::ItemContent::Text { text: t, .. } => *t = text,
                 crate::model::ItemContent::Shape { label: t, .. } => *t = text,
+                crate::model::ItemContent::RichText { doc } => {
+                    *doc = openmind_text::RichTextDoc::from_plain(&text);
+                }
+                crate::model::ItemContent::Connector { label: t, .. } => *t = text,
+                crate::model::ItemContent::Table { cells, .. } => {
+                    if let Some(row) = cells.first_mut().and_then(|r| r.first_mut()) {
+                        *row = text;
+                    }
+                }
+                crate::model::ItemContent::Audio { title, .. }
+                | crate::model::ItemContent::Video { title, .. }
+                | crate::model::ItemContent::Youtube { title, .. } => *title = text,
                 crate::model::ItemContent::Drawing { .. }
-                | crate::model::ItemContent::Image { .. } => {}
+                | crate::model::ItemContent::Image { .. }
+                | crate::model::ItemContent::Pdf { .. } => {}
             }
         }
     }
@@ -370,8 +383,21 @@ impl CanvasDoc {
                 crate::model::ItemContent::Sticky { text: t, .. }
                 | crate::model::ItemContent::Text { text: t, .. } => *t = text.to_string(),
                 crate::model::ItemContent::Shape { label: t, .. } => *t = text.to_string(),
+                crate::model::ItemContent::RichText { doc } => {
+                    *doc = openmind_text::RichTextDoc::from_plain(text);
+                }
+                crate::model::ItemContent::Connector { label: t, .. } => *t = text.to_string(),
+                crate::model::ItemContent::Table { cells, .. } => {
+                    if let Some(row) = cells.first_mut().and_then(|r| r.first_mut()) {
+                        *row = text.to_string();
+                    }
+                }
+                crate::model::ItemContent::Audio { title, .. }
+                | crate::model::ItemContent::Video { title, .. }
+                | crate::model::ItemContent::Youtube { title, .. } => *title = text.to_string(),
                 crate::model::ItemContent::Drawing { .. }
-                | crate::model::ItemContent::Image { .. } => {}
+                | crate::model::ItemContent::Image { .. }
+                | crate::model::ItemContent::Pdf { .. } => {}
             }
         }
     }

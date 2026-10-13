@@ -13,20 +13,28 @@ Rust app reaches parity.
 rust/
   Cargo.toml            workspace (members: crates/*)
   crates/
-    board/              whiteboard document model + `.vsom` board files
-                        (byte-compatible with the Swift app's JSON format)
+    board/              whiteboard document model + `.vsom` (Swift-compatible)
+                        + StableBoard v2, asset refs, manifest, `.canvaspkg/`,
+                        validation, migrations, atomic package I/O
     ink/                pressure-aware inking core on the vector stack:
                         resample + smooth + variable-width outline paths,
                         eraser hit-testing, Swift StrokeCodec `[[x,y]]` compat
     canvas/             scene model: items, selection/groups/arrange, undo,
-                        `.vsom` mapping (unknown kinds ride along untouched)
-    app/                `openmind` desktop app (eframe canvas: select, shapes,
-                        sticky/text, ink, images, `.vsom` save/open)
+                        spatial grid index + culling, transforms, connectors,
+                        tables, rich text, audio/video/YouTube/PDF cards,
+                        templates, `.vsom` mapping (unknown kinds ride along)
+    text/               structured rich-text docs + HTML sanitize
+    media/              AssetStore, import pipeline, YouTube URLs, links, previews
+    media-audio/        AudioCapture/AudioPlayer traits, WAV, waveform peaks
+    media-video/        format matrix, probe/poster/playback lifecycle
+    engine/             command layer + undo grouping + autosave/recovery
+    export/             PNG/SVG/PDF/native/manifest exporters (headless)
+    app/                `openmind` desktop (eframe canvas: tools, media cards,
+                        templates, gallery flows, export, autosave, shortcuts)
 ```
 
-Later milestones add: `canvas` (viewport/selection engine), `render` (board →
-scene via `vectorcraft-render`), `app` (eframe desktop), `web` (wasm),
-`media` (audio/video/YouTube), packaging.
+See `../docs/adr/0001-product-architecture.md` for the reuse/extend/new
+boundary, engine choices, YouTube policy, storage/migration, and budgets.
 
 ## Sibling checkout requirement
 
@@ -40,18 +48,30 @@ Both repos must sit side by side:
 <parent>/openmind-vector     itisverysoft/openmind-vector
 ```
 
-## Milestones
+## Milestones (plan §18; all landed in this branch)
 
-- **M1 (this scaffold):** workspace, `board` model + `.vsom` round trip,
-  `ink` stroke pipeline, headless render smoke test (ink → vector document
-  → PNG via `vectorcraft-render`).
-- **M2:** canvas engine (viewport, selection/marquee/groups/arrange ported
-  from `CanvasView` + `CanvasGrouping`), shape items as vector paths.
-- **M3:** inking depth — tablet pressure/tilt, eraser splitting, highlighter
-  blending, stroke simplification budgets.
-- **M4:** rich content — images, PDF pages, tables, pin notes, rich text.
-- **M5:** media + export parity (PNG/PDF/SVG/`.vsom`), desktop app, web build.
-- **M6:** hardening + packaging.
+- **A — Baseline & shell:** upstream builds, bundle `site.verysoft.openmind`,
+  `.vsom`/`.canvaspkg` naming, ADR + benchmark baseline. Done when clean
+  checkout builds reproducibly.
+- **B — Board & objects:** versioned model + stable ids, commands/undo,
+  native save/load + autosave recovery, spatial index + culling. Done when
+  mixed objects survive reopen and stay responsive on fixtures.
+- **C — Core whiteboard:** stickies/shapes/connectors/tables/ink/eraser,
+  selection/transforms/layers/groups/shortcuts, backgrounds + templates. Done
+  when interactions avoid full-board rebuilds.
+- **D — Rich text & images/PDF:** structured rich text + undo, image
+  import/paste/drag-drop + thumbnails, PDF baseline. Done when long text and
+  large images don't freeze pan/zoom.
+- **E — Audio:** mic permission + recording UX, import/playback, waveform +
+  persistence, recovery/error tests. Done when record→attach→reopen→play works.
+- **F — Video & YouTube:** metadata/poster/playback, direct-URL behavior,
+  URL parser + click-to-load embed, lifecycle/memory tests. Done when unopened
+  cards stay lightweight and blocked sources fail gracefully.
+- **G — Reliability & release:** fuzz/safety + migration tests, perf suite,
+  keyboard/accessibility pass, license audit, signing/notarization, clean
+  install test. Done when no known data-loss remains and the app installs clean.
+
+Legacy scaffold milestones M1–M6 are subsumed by A–G above.
 
 ## Commands
 

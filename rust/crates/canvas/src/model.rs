@@ -100,6 +100,11 @@ pub enum ItemContent {
         color_hex: String,
         font_size: f64,
     },
+    /// Structured rich text (display via text stack; editing overlay commits
+    /// bursts). Plain `Text` stays for legacy `.vsom` records.
+    RichText {
+        doc: openmind_text::RichTextDoc,
+    },
     Drawing {
         strokes: Vec<PaintedInk>,
     },
@@ -107,6 +112,44 @@ pub enum ItemContent {
         bytes: Vec<u8>,
         pixel_w: u32,
         pixel_h: u32,
+    },
+    /// Lightweight media refs (hash + metadata, never decoded bytes in the
+    /// item). The package `assets/` dir holds the bytes; `.vsom` foreign
+    /// records carry them for Swift compat until promoted.
+    Audio {
+        title: String,
+        asset_hash: String,
+        file_name: String,
+        duration_secs: f64,
+    },
+    Video {
+        title: String,
+        asset_hash: String,
+        file_name: String,
+        duration_secs: f64,
+    },
+    Youtube {
+        video_id: String,
+        title: String,
+    },
+    Pdf {
+        asset_hash: String,
+        file_name: String,
+        page: i64,
+    },
+    /// Attached connector: endpoint ids + anchors stay attached on move.
+    Connector {
+        from: String,
+        to: String,
+        from_anchor: Option<String>,
+        to_anchor: Option<String>,
+        label: String,
+    },
+    /// Simple grid table (cells as plain strings; rich formatting deferred).
+    Table {
+        rows: usize,
+        cols: usize,
+        cells: Vec<Vec<String>>,
     },
 }
 
@@ -225,6 +268,120 @@ impl CanvasItem {
                 color_hex: "000000".to_string(),
                 font_size: 24.0,
             },
+        }
+    }
+
+    pub fn rich_text(frame: Rect, z: f64, doc: openmind_text::RichTextDoc) -> Self {
+        Self {
+            id: id(),
+            kind_raw: "text".to_string(),
+            frame,
+            z,
+            locked: false,
+            group: None,
+            page: 0,
+            content: ItemContent::RichText { doc },
+        }
+    }
+
+    pub fn connector(frame: Rect, z: f64, from: &ItemId, to: &ItemId) -> Self {
+        Self {
+            id: id(),
+            kind_raw: "shape".to_string(),
+            frame,
+            z,
+            locked: false,
+            group: None,
+            page: 0,
+            content: ItemContent::Connector {
+                from: from.0.clone(),
+                to: to.0.clone(),
+                from_anchor: None,
+                to_anchor: None,
+                label: String::new(),
+            },
+        }
+    }
+
+    pub fn table(frame: Rect, z: f64, rows: usize, cols: usize) -> Self {
+        let rows = rows.clamp(1, 32);
+        let cols = cols.clamp(1, 16);
+        Self {
+            id: id(),
+            kind_raw: "table".to_string(),
+            frame,
+            z,
+            locked: false,
+            group: None,
+            page: 0,
+            content: ItemContent::Table {
+                rows,
+                cols,
+                cells: vec![vec![String::new(); cols]; rows],
+            },
+        }
+    }
+
+    pub fn audio_card(frame: Rect, z: f64, title: String, asset_hash: String) -> Self {
+        Self {
+            id: id(),
+            kind_raw: "audio".to_string(),
+            frame,
+            z,
+            locked: false,
+            group: None,
+            page: 0,
+            content: ItemContent::Audio {
+                title,
+                asset_hash,
+                file_name: String::new(),
+                duration_secs: 0.0,
+            },
+        }
+    }
+
+    pub fn video_card(frame: Rect, z: f64, title: String, asset_hash: String) -> Self {
+        Self {
+            id: id(),
+            kind_raw: "video".to_string(),
+            frame,
+            z,
+            locked: false,
+            group: None,
+            page: 0,
+            content: ItemContent::Video {
+                title,
+                asset_hash,
+                file_name: String::new(),
+                duration_secs: 0.0,
+            },
+        }
+    }
+
+    pub fn youtube_card(frame: Rect, z: f64, video_id: String) -> Self {
+        Self {
+            id: id(),
+            kind_raw: "youtube".to_string(),
+            frame,
+            z,
+            locked: false,
+            group: None,
+            page: 0,
+            content: ItemContent::Youtube {
+                video_id,
+                title: String::new(),
+            },
+        }
+    }
+
+    /// Plain-text view of any textual content (display + export).
+    pub fn display_text(&self) -> Option<String> {
+        match &self.content {
+            ItemContent::Sticky { text, .. } | ItemContent::Text { text, .. } => Some(text.clone()),
+            ItemContent::Shape { label, .. } => Some(label.clone()),
+            ItemContent::RichText { doc } => Some(doc.plain_text()),
+            ItemContent::Connector { label, .. } => Some(label.clone()),
+            _ => None,
         }
     }
 }

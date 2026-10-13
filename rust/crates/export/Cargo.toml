@@ -1,0 +1,14 @@
+[package]
+name = "openmind-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Board exporters: PNG, SVG, PDF, native package, media manifest"
+
+[dependencies]
+openmind-board.workspace = true
+openmind-canvas.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
